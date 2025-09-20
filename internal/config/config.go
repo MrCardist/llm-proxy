@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -27,6 +28,35 @@ func formatNumber(n int64) string {
 		result += string(char)
 	}
 
+	return result
+}
+
+// expandEnvironmentVariables expands environment variables in YAML content
+// Supports syntax: ${VAR_NAME} and ${VAR_NAME:-default_value}
+func expandEnvironmentVariables(yamlContent []byte) []byte {
+	// Regex to match ${VAR_NAME} and ${VAR_NAME:-default}
+	envVarRegex := regexp.MustCompile(`\$\{([^}:]+)(?::(-?)([^}]*))?\}`)
+	
+	result := envVarRegex.ReplaceAllFunc(yamlContent, func(match []byte) []byte {
+		matches := envVarRegex.FindSubmatch(match)
+		if len(matches) < 2 {
+			return match
+		}
+		
+		varName := string(matches[1])
+		
+		// Get environment variable value
+		envValue := os.Getenv(varName)
+		
+		// If env var is empty and we have a default value
+		if envValue == "" && len(matches) >= 4 {
+			defaultValue := string(matches[3])
+			return []byte(defaultValue)
+		}
+		
+		return []byte(envValue)
+	})
+	
 	return result
 }
 
@@ -216,9 +246,12 @@ func LoadYAMLConfig(filename string) (*YAMLConfig, error) {
 		return nil, fmt.Errorf("failed to read config file %s: %w", filename, err)
 	}
 
+	// Expand environment variables in the YAML content
+	expandedData := expandEnvironmentVariables(data)
+
 	// Parse YAML
 	var config YAMLConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	if err := yaml.Unmarshal(expandedData, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML config: %w", err)
 	}
 
@@ -249,9 +282,12 @@ func loadYAMLConfigWithoutValidation(filename string) (*YAMLConfig, error) {
 		return nil, fmt.Errorf("failed to read config file %s: %w", filename, err)
 	}
 
+	// Expand environment variables in the YAML content
+	expandedData := expandEnvironmentVariables(data)
+
 	// Parse YAML
 	var config YAMLConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	if err := yaml.Unmarshal(expandedData, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML config: %w", err)
 	}
 
