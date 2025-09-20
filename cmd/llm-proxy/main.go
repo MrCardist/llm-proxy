@@ -509,7 +509,7 @@ func runServer(yamlConfig *config.YAMLConfig) {
 		}
 	}
 
-	// Register providers
+	// Register standard providers
 	openAIProvider := providers.NewOpenAIProxy()
 	globalProviderManager.RegisterProvider(openAIProvider)
 
@@ -519,15 +519,50 @@ func runServer(yamlConfig *config.YAMLConfig) {
 	geminiProvider := providers.NewGeminiProxy()
 	globalProviderManager.RegisterProvider(geminiProvider)
 
+	// Register local LLM providers
+	if yamlConfig.LocalLLMs != nil {
+		for providerName, providerConfig := range yamlConfig.LocalLLMs {
+			if providerConfig.Enabled {
+				localProvider := providers.NewLocalLLMProvider(providerName, &providerConfig)
+				globalProviderManager.RegisterProvider(localProvider)
+				if !debugMode {
+					logger.Info("Registered local LLM provider", "provider", providerName, "default_model", providerConfig.DefaultModel)
+				}
+			}
+		}
+	}
+
+	// Register Claude Code proxy if enabled
+	if yamlConfig.ClaudeCodeProxy != nil && yamlConfig.ClaudeCodeProxy.Enabled {
+		targetProvider := globalProviderManager.GetProvider(yamlConfig.ClaudeCodeProxy.TargetProvider)
+		if targetProvider != nil {
+			claudeCodeProxy := providers.NewClaudeCodeProxy("cc-qwen", yamlConfig.ClaudeCodeProxy, targetProvider)
+			globalProviderManager.RegisterProvider(claudeCodeProxy)
+			if !debugMode {
+				logger.Info("Registered Claude Code proxy", "proxy", "cc-qwen", "target_provider", yamlConfig.ClaudeCodeProxy.TargetProvider, "target_model", yamlConfig.ClaudeCodeProxy.TargetModel)
+			}
+		} else {
+			if !debugMode {
+				logger.Warn("Claude Code proxy target provider not found", "target_provider", yamlConfig.ClaudeCodeProxy.TargetProvider)
+			}
+		}
+	}
+
 	// Add middleware (order matters for streaming)
 	r.Use(middleware.MetaURLRewritingMiddleware(globalProviderManager)) // URL rewriting must happen first
+
+	// Add debug middleware early if enabled (suppresses other logs)
+	r.Use(middleware.DebugMiddleware(globalProviderManager, debugMode))
 
 	// Add API key validation middleware if API key management is enabled
 	if globalAPIKeyStore != nil {
 		r.Use(middleware.APIKeyValidationMiddleware(globalProviderManager, globalAPIKeyStore))
 	}
 
-	r.Use(middleware.LoggingMiddleware(globalProviderManager))
+	// Only add logging middleware if debug mode is not enabled
+	if !debugMode {
+		r.Use(middleware.LoggingMiddleware(globalProviderManager))
+	}
 	if globalRateLimiter != nil {
 		r.Use(middleware.RateLimitingMiddleware(globalProviderManager, yamlConfig, globalRateLimiter))
 	}
@@ -574,40 +609,50 @@ func runServer(yamlConfig *config.YAMLConfig) {
 	// Register extra routes for all providers (e.g., compatibility routes)
 	for name, provider := range globalProviderManager.GetAllProviders() {
 		provider.RegisterExtraRoutes(r)
-		logger.Info("Registered extra routes for provider", "provider", name)
+		if !debugMode {
+			logger.Info("Registered extra routes for provider", "provider", name)
+		}
 	}
 
-	// Start server
-	logger.Info("Starting LLM Proxy server", "port", port)
+	// Only show startup logs if not in debug mode
+	if !debugMode {
+		// Start server
+		logger.Info("Starting LLM Proxy server", "port", port)
 
-	// Log features
-	features := []string{"Streaming support", "CORS", "Request logging", "Token parsing"}
-	if globalCostTracker != nil {
-		features = append(features, "Cost tracking")
-	}
-	if globalRateLimiter != nil {
-		features = append(features, "Rate limiting")
-	}
-	logger.Info("Features enabled", "features", strings.Join(features, ", "))
+		// Log features
+		features := []string{"Streaming support", "CORS", "Request logging", "Token parsing"}
+		if globalCostTracker != nil {
+			features = append(features, "Cost tracking")
+		}
+		if globalRateLimiter != nil {
+			features = append(features, "Rate limiting")
+		}
+		logger.Info("Features enabled", "features", strings.Join(features, ", "))
 
-	logger.Info("Health check available", "url", "http://0.0.0.0:"+port+"/health")
+		logger.Info("Health check available", "url", "http://0.0.0.0:"+port+"/health")
 
-	// Log cost tracking status
-	if globalCostTracker != nil {
-		logger.Info("Cost tracking: ENABLED")
+		// Log cost tracking status
+		if globalCostTracker != nil {
+			logger.Info("Cost tracking: ENABLED")
+		} else {
+			logger.Info("Cost tracking: DISABLED")
+		}
+
+		// Log registered providers
+		for name := range globalProviderManager.GetAllProviders() {
+			logger.Info("Registered provider", "provider", name)
+		}
+
+		logger.Info("OpenAI API endpoints available", "url", "http://0.0.0.0:"+port+"/openai/")
+		logger.Info("Anthropic API endpoints available", "url", "http://0.0.0.0:"+port+"/anthropic/")
+		logger.Info("Gemini API endpoints available", "url", "http://0.0.0.0:"+port+"/gemini/")
+		logger.Info("Meta routes with user ID available", "pattern", "http://0.0.0.0:"+port+"/meta/{userID}/{provider}/")
 	} else {
-		logger.Info("Cost tracking: DISABLED")
+		// In debug mode, show minimal startup info
+		fmt.Printf("\n🐛 LLM Proxy Debug Mode Started on port %s\n", port)
+		fmt.Printf("📍 Health check: http://localhost:%s/health\n", port)
+		fmt.Printf("🎯 Ready to capture requests/responses in real-time...\n\n")
 	}
-
-	// Log registered providers
-	for name := range globalProviderManager.GetAllProviders() {
-		logger.Info("Registered provider", "provider", name)
-	}
-
-	logger.Info("OpenAI API endpoints available", "url", "http://0.0.0.0:"+port+"/openai/")
-	logger.Info("Anthropic API endpoints available", "url", "http://0.0.0.0:"+port+"/anthropic/")
-	logger.Info("Gemini API endpoints available", "url", "http://0.0.0.0:"+port+"/gemini/")
-	logger.Info("Meta routes with user ID available", "pattern", "http://0.0.0.0:"+port+"/meta/{userID}/{provider}/")
 
 	server := &http.Server{
 		Addr:    "0.0.0.0:" + port,
@@ -652,12 +697,16 @@ func runServer(yamlConfig *config.YAMLConfig) {
 	logger.Info("👋 Server shutdown complete")
 }
 
+// Global debug mode flag
+var debugMode bool
+
 func main() {
 	// Parse command line flags
 	var showVersion bool
 	var validateConfig string
 	flag.BoolVar(&showVersion, "version", false, "Show version and configuration, then exit")
 	flag.StringVar(&validateConfig, "validate-config", "", "Validate configuration files (comma-separated paths) and exit")
+	flag.BoolVar(&debugMode, "llm-debug", false, "Enable real-time debug mode showing requests/responses with colors")
 	flag.Parse()
 
 	// Handle config validation if requested
