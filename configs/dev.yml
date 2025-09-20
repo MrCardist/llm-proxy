@@ -57,3 +57,14 @@ features:
           tokens_per_minute: 2000
           requests_per_day: 100
           tokens_per_day: 200000
+
+# Enable local LLM providers for development
+local_llms:
+  gpt-oss:
+    enabled: true  # Enable for development testing
+  qwen:
+    enabled: true  # Enable for development testing
+
+# Enable Claude Code proxy for development
+claude_code_proxy:
+  enabled: true  # Enable for development testing

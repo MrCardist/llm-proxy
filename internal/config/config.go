@@ -39,7 +39,9 @@ type YAMLConfig struct {
 	Features FeaturesConfig `yaml:"features"`
 
 	// Providers configuration
-	Providers map[string]ProviderConfig `yaml:"providers"`
+	Providers    map[string]ProviderConfig         `yaml:"providers"`
+	LocalLLMs    map[string]LocalLLMProviderConfig `yaml:"local_llms,omitempty"`
+	ClaudeCodeProxy *ClaudeCodeProxyConfig        `yaml:"claude_code_proxy,omitempty"`
 }
 
 // FeaturesConfig represents feature toggle configuration
@@ -136,8 +138,41 @@ type RedisConfig struct {
 
 // ProviderConfig represents configuration for a specific provider
 type ProviderConfig struct {
-	Enabled bool                   `yaml:"enabled"`
-	Models  map[string]ModelConfig `yaml:"models"`
+	Enabled      bool                   `yaml:"enabled"`
+	Models       map[string]ModelConfig `yaml:"models"`
+	DefaultModel string                 `yaml:"default_model,omitempty"` // Used when client doesn't specify model
+}
+
+// LocalLLMProviderConfig represents configuration for local LLM providers
+type LocalLLMProviderConfig struct {
+	Enabled              bool                           `yaml:"enabled"`
+	DefaultModel         string                         `yaml:"default_model"`
+	Models               map[string]LocalLLMModelConfig `yaml:"models"`
+	ThinkingTagFix       bool                           `yaml:"thinking_tag_fix,omitempty"`       // Enable <think> tag processing
+	RequestTimeout       int                            `yaml:"request_timeout,omitempty"`        // Request timeout in seconds
+	MaxRetries          int                            `yaml:"max_retries,omitempty"`            // Maximum retry attempts
+}
+
+// LocalLLMModelConfig represents configuration for a local LLM model
+type LocalLLMModelConfig struct {
+	Enabled   bool                    `yaml:"enabled"`
+	Aliases   []string                `yaml:"aliases,omitempty"`
+	Endpoints []LocalLLMEndpointConfig `yaml:"endpoints"`
+	Pricing   interface{}             `yaml:"pricing,omitempty"`
+}
+
+// LocalLLMEndpointConfig represents a single endpoint configuration
+type LocalLLMEndpointConfig struct {
+	URL    string `yaml:"url"`               // Full URL including /v1 path
+	APIKey string `yaml:"api_key,omitempty"` // Optional API key
+}
+
+// ClaudeCodeProxyConfig represents configuration for Claude Code proxy
+type ClaudeCodeProxyConfig struct {
+	Enabled          bool              `yaml:"enabled"`
+	TargetProvider   string            `yaml:"target_provider"`   // Which local LLM provider to route to
+	TargetModel      string            `yaml:"target_model"`      // Always use this model
+	ParameterMapping map[string]string `yaml:"parameter_mapping"` // Parameter name mappings (e.g., max_tokens -> max_completion_tokens)
 }
 
 // ModelConfig represents configuration for a specific model

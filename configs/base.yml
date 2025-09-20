@@ -590,3 +590,56 @@ defaults:
     tokens_per_hour: 600_000_000
     requests_per_minute: 50_000
     requests_per_hour: 3_000_000
+
+# =============================================================================
+# LOCAL LLM PROVIDERS
+# =============================================================================
+
+local_llms:
+  gpt-oss:
+    enabled: false  # Disabled by default - enable in dev.yml
+    default_model: "openai/gpt-oss-120b"
+    request_timeout: 120  # seconds
+    max_retries: 3
+    models:
+      "openai/gpt-oss-120b":
+        enabled: true
+        aliases: ["gpt-oss", "gpt-oss-120b"]
+        endpoints:
+          - url: "http://192.168.1.100:8000/v1"
+            api_key: ""  # Optional - can be set via environment
+          - url: "http://192.168.1.101:8000/v1" 
+            api_key: ""
+        pricing:
+          input: 0.1   # Cost per 1M input tokens (example)
+          output: 0.4  # Cost per 1M output tokens (example)
+
+  qwen:
+    enabled: false  # Disabled by default - enable in dev.yml  
+    default_model: "qwen/qwen3-next-80b-a3b-thinking"
+    thinking_tag_fix: true  # Enable <think> tag processing for Qwen
+    request_timeout: 120
+    max_retries: 3
+    models:
+      "qwen/qwen3-next-80b-a3b-thinking":
+        enabled: true
+        aliases: ["qwen", "qwen-80b", "qwen-thinking"]
+        endpoints:
+          - url: "http://192.168.1.200:8001/v1"
+            api_key: ""
+          - url: "http://192.168.1.201:8001/v1"
+            api_key: ""
+        pricing:
+          input: 0.05  # Example local LLM pricing
+          output: 0.2
+
+# =============================================================================
+# CLAUDE CODE PROXY
+# =============================================================================
+
+claude_code_proxy:
+  enabled: false  # Disabled by default - enable in dev.yml
+  target_provider: "qwen"
+  target_model: "qwen/qwen3-next-80b-a3b-thinking"
+  parameter_mapping:
+    max_tokens: "max_completion_tokens"  # Claude uses max_tokens, but local LLMs may use max_completion_tokens
