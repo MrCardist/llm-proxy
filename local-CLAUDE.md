@@ -4,348 +4,362 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is a Go-based LLM proxy server that forwards requests to OpenAI, Anthropic, and Gemini providers and does cost tracking. Please read the text in in LLM-proxy-article.md to understand the purpose of the proxy
+This is a Go-based LLM proxy server that forwards requests to OpenAI, Anthropic, and Gemini providers with comprehensive cost tracking, rate limiting, and API key management. The proxy serves as a lightweight alternative to `litellm` with a modular architecture built on Go and the Gorilla web toolkit.
 
-## New Purpose
+**Core Purpose**: Multi-provider LLM proxy with advanced features like streaming support, cost tracking, rate limiting, and local LLM integration.
 
-Now we want to add additional features to this proxy because its code base is small and simple. We want to add these features:
+## Active Development Goals
 
--   debug middleware: User llm request real-time debug: it should be possible to start the proxy foreground with an –-llm-debug option that only shows the client request (headers and json) in one color and the response of the backend llm (also json) in a different color. Show json well formatted in a Terminal ANSI color
--   Implement prefixes such as /qwen/ that fix certain issues with locally hosted LLM and make them truly openai compatible, there the issues are frequently because of mislabled llm reasoning content. All reasoning should be wrapped in “think” tags, for example :  
-    \<think\>this is reasoning content\</think\>this is normal content. But
--   Claude Code proxy, under a prefix for example /cc-qwen/ we want to export the anthropic api as it is used for claude code to the end user and we want to redirect the call to an open-source model such as qwen that us installed locally on our GPU and launched via vllm. Please see markdown doc custom-claude-code-proxy.md for a similar project implemented in python, the challenge there was that the llm had the parameter max_completion_tokens instead of the legacy max_tokens
+The project is currently being extended with these major features:
 
-## New Purpose implementation
+1. **Debug Middleware**: Real-time request/response debugging with `--llm-debug` flag showing colored, formatted JSON output
+2. **Local LLM Providers**: Support for locally hosted models (gpt-oss, qwen) with endpoint management and failover
+3. **Claude Code Proxy**: `/cc-qwen/` endpoint that accepts Anthropic API format and routes to local models
+4. **Think Tag Processing**: Automatic `<think>` tag wrapping for reasoning content from local models
 
-First setup a .env.example file with defaults and commented environment vars, then make sure you can compile the binary and, launch it and parse the output, then start the implementation with debug middleware and new providers and finally claude code , test frequently   
-  
-Then follow these instructions that we developed in a Q+A
+### Implementation Status & Priorities
 
--   What's our local vllm server URL?   
-    There are multiple local vLLM endpoints and there should be a list of urls per provider, these are used in round robin and failover mode
--   What model names would you like to be mapped?   
-    The specific model names I am hosting locally are “openai/gpt-oss-120b” and “qwen/qwen3-next-80b-a3b-thinking”, these are each hosted on different machines and ports.
--   Reasoning detection: Should \<think\> wrapping be only when certain patterns are detected and Configurable per model?  
-    Yes, for example Qwen only shows a \</think\> tag at the end of the thinking process but not at the beginning, so the modification must be a pattern detection of thinking, in this case insert \<think\> at the beginning of the response
--   What is the config approach?   
-    continue to use YAML config for endpoints/models and .env file, only use command line for –-llm-debug option
--   Error handling: How should the proxy handle when local LLM is unavailable?  
-    It should respond with a normal error message: Sorry the backend server XXX is currently not available, please try again later or contact your Sysadmin
-
-Note that claude code should be able to start the proxy binary and be able to parse all debug and log output to learn and code
-
-Finally Claude Opus had a few clarifying Architecture Questions:
-
-1\. Model-to-Endpoint Mapping: You have 2 models on different machines/ports. Should the configuration be:
-
-\- Model openai/gpt-oss-120b → specific list of endpoints?
-
-\- Model qwen/qwen3-next-80b-a3b-thinking → different list of endpoints?
-
-\- Or should all endpoints serve both models (true round-robin)?  
-Answer: this is by provider, so I have a new provider called gpt-oss and this provider has a model called openai/gpt-oss-120b and each model within that provider may have a distinct list of endpoints
-
-2\. Failover Logic: For the round-robin + failover:
-
-\- Should it try next endpoint immediately on connection failure?
-
-\- What about timeout duration before marking endpoint as "down"?
-
-\- Should failed endpoints be retried periodically (health checks)?  
-  
-Answer: The next endpoint should be tried immediately, and the timeout should be 100 milliseconds. The failed endpoint should be tried again immediately if the round robin think it is its turn,
-
-3\. Request Routing: For the different prefixes:
-
-\- /qwen/ → routes to which model specifically? (the qwen one?)
-
-\- /cc-qwen/ → accepts Claude format, but routes to which backend model?
-
-\- Should /openai/ requests also be routable to local models?  
-/openai/ requests should not be routed to local models
-
-4\. Thinking Pattern Detection:
-
-\- For responses that end with \</think\> but no opening tag, should we:
-
-\- Scan backwards from \</think\> to find where reasoning started?
-
-\- Use a heuristic (like "Let me think", "First, I should", etc.)?
-
-\- Or wrap the entire response up to \</think\>?
-
-Answer: you should scan backwards from \</think\> to the beginning of the response as the reasoning content starts at the beginning of the response
-
-5\. API Key Handling:
-
-\- Should local LLM endpoints require API keys?
-
-\- How should the proxy handle authentication for local models?  
-Answer: keys are optional, they local llm moels may or may not require keys
-
-6\. Streaming Behavior:
-
-\- For the \<think\> tag insertion in streaming responses, should we:
-
-\- Buffer initial chunks to detect thinking patterns?
-
-\- Or inject \<think\> immediately and handle closing tag when detected?  
-Answer: inject \<think\> immediately and handle closing tag when detected but only do this for Qwen
-
-7\. Debug Output Format:
-
-\- Should --llm-debug show:
-
-\- Just the request/response bodies?
-
-\- Or also metadata like endpoint selected, retry attempts, latency?
-
-\- Should it follow the proxy's stdout or separate file/stream?
-
-Answer: It should show all the information that one would pass to curl, the proxy's stdout should not show any other errors if --llm-debug is active
-
-```
-Final Implementation Plan Summary
-
-  1. Provider Structure
-
-  - New providers: gpt-oss and qwen
-  - Each provider has models with their own endpoint lists
-  - Each provider has a default_model for when client doesn't specify
-
-  2. Routing Map
-
-  - /gpt-oss/* → gpt-oss provider (OpenAI format)
-  - /qwen/* → qwen provider (OpenAI format + think tag fixes)
-  - /cc-qwen/* → Claude Code proxy (accepts Anthropic format → converts to OpenAI → routes to qwen provider)
-  - /openai/* → real OpenAI only (no local routing)
-
-  3. Think Tag Processing
-
-  - Non-streaming: If response contains </think> anywhere, prepend <think> at start (unless already present)
-  - Streaming: Always inject <think> at stream start if model name ends with -thinking (unless already present in first chunk)
-  - Only applied to qwen provider responses
-  - Edge case: If response already starts with <think>, do NOT prepend another one
-
-  4. Model Handling
-
-  - Never modify/override model names from client requests
-  - If request has no model specified, use provider's default_model
-  - Models are passed through as-is to backend endpoints
-
-  5. Endpoint Management
-
-  - Random selection from available endpoints (no stateful round-robin to simplify)
-  - 100ms timeout, immediate failover to next endpoint
-  - Failed endpoints immediately rejoin rotation (no blacklisting)
-  - URLs in config must include full path (e.g., "/v1"), proxy does NOT append paths
-
-  6. Debug Mode (--llm-debug)
-
-  - Shows curl-equivalent: method, URL, headers, JSON body
-  - Shows actual endpoint URL selected
-  - Shows retry attempts if first endpoint fails
-  - Shows timing information (request duration)
-  - Request in cyan, response in green
-  - Pretty-printed JSON
-  - Suppresses all other logs when active
-
-  7. Error Handling
-
-  - All errors returned in OpenAI JSON format (even for /cc-qwen/*)
-  - Connection failures: "Sorry the backend server XXX is currently not available..."
-
-  8. Configuration Example
-
-  providers:
-    gpt-oss:
-      enabled: true
-      default_model: "openai/gpt-oss-120b"  # used if client doesn't specify
-      models:
-        openai/gpt-oss-120b:
-          endpoints:
-            - url: "http://192.168.1.100:8000/v1"  # full path including /v1
-              api_key: ""  # optional
-            - url: "http://192.168.1.101:8000/v1"
-
-    qwen:
-      enabled: true
-      default_model: "qwen/qwen3-next-80b-a3b-thinking"
-      models:
-        qwen/qwen3-next-80b-a3b-thinking:  # ends with '-thinking' → streaming <think> injection
-          endpoints:
-            - url: "http://192.168.1.200:8001/v1"  # full path including /v1
-            - url: "http://192.168.1.201:8001/v1"
-
-    claude_code_proxy:  # special provider for /cc-qwen/
-      enabled: true
-      target_provider: "qwen"
-      target_model: "qwen/qwen3-next-80b-a3b-thinking"  # always uses this model
-      parameter_mapping:
-        max_tokens: "max_completion_tokens"  # Claude → OpenAI parameter conversion
-
-  9. Request Flow Examples
-
-  Example 1: /qwen/v1/chat/completions with "model": "qwen/qwen3-next-80b-a3b-thinking"
-  - Routes to qwen provider
-  - Uses specified model's endpoints
-  - Response gets <think> tag processing
-
-  Example 2: /cc-qwen/v1/messages (Claude format) with "model": "claude-3-sonnet"
-  - Converts Anthropic → OpenAI format
-  - Always uses configured target_model: qwen/qwen3-next-80b-a3b-thinking
-  - Converts max_tokens → max_completion_tokens
-  - Response gets <think> processing + OpenAI → Anthropic format conversion
-
-  Example 3: /gpt-oss/v1/chat/completions with no model specified
-  - Uses default_model: openai/gpt-oss-120b
-  - No think tag processing
-
-  10. Testing Order
-
-  - First: Get basic compilation + .env.example working (with default ports 8000, 8001, etc.)
-  - Second: Debug middleware (--llm-debug flag)
-  - Third: Local providers (gpt-oss, qwen)
-  - Fourth: Claude Code proxy (/cc-qwen/)
-  - Each step with test checkpoint before proceeding
-
-  11. Implementation Details
-
-  - .env.example will include default local LLM ports (8000, 8001)
-  - Round-robin is stateless random selection for simplicity
-  - Endpoint URLs must be complete (proxy never modifies them)
-  - Debug mode shows all retry details and selected endpoints
-```
-
-**Everything below is content from the original project:**
-
-## Common Development Commands
-
-### Build and Run
-
-```bash
-# Install dependencies and build
-make install build
-
-# Run the proxy server (development mode)
-make dev
-
-# Run the built binary
-make run
-
-# Quick start (install + build + ready to run)
-make quick-start
-```
-
-### Testing
-
-```bash
-# Run unit tests only
-make test
-
-# Run all tests including integration tests (requires API keys)
-make test-all
-
-# Run provider-specific tests
-make test-openai
-make test-anthropic  
-make test-gemini
-
-# Run health check tests
-make test-health
-```
-
-### Code Quality
-
-```bash
-# Run all code quality checks (format + vet + lint)
-make check
-
-# Individual quality checks
-make fmt    # Format Go code
-make vet    # Run go vet
-make lint   # Run golint
-```
-
-### Environment Setup
-
-Set these environment variables for integration testing:
-
-```bash
-export OPENAI_API_KEY=your_openai_key
-export ANTHROPIC_API_KEY=your_anthropic_key
-export GEMINI_API_KEY=your_gemini_key
-```
-
-Check environment variables: `make env-check`
+1. **✅ Base Architecture**: Established provider system, middleware pipeline, and configuration management
+2. **🚧 Local LLM Integration**: Add `gpt-oss` and `qwen` providers with round-robin endpoint selection
+3. **🚧 Debug Middleware**: Implement `--llm-debug` with curl-equivalent output formatting
+4. **🚧 Claude Code Proxy**: Anthropic→OpenAI format conversion with parameter mapping
+5. **🚧 Think Tag Processing**: Pattern detection and automatic `<think>` tag insertion for qwen models
 
 ## Architecture Overview
 
 ### Core Components
 
-**Main Entry Point**: `cmd/llm-proxy/main.go` - Server setup, middleware registration, and provider coordination
+**Main Entry Point**: `cmd/llm-proxy/main.go`
+- Server initialization and graceful shutdown
+- Provider registration and middleware orchestration
+- Configuration loading (base.yml + environment overlay)
+- Global component initialization (cost tracker, rate limiter, API key store)
 
 **Provider System** (`internal/providers/`):
+- `provider.go`: Core Provider interface defining streaming detection, metadata parsing, health checks
+- `openai.go`, `anthropic.go`, `gemini.go`: Standard LLM provider implementations
+- `local_llm.go`: Local LLM provider with endpoint management and failover (100ms timeout)
+- `claude_code_proxy.go`: Anthropic↔OpenAI format conversion proxy
+- Each provider uses `CreateGenericDirector()` for common reverse proxy logic
 
--   `provider.go` - Core interfaces and provider management
--   `openai.go`, `anthropic.go`, `gemini.go` - Provider-specific implementations
--   Each provider implements streaming detection, request proxying, response metadata parsing, and health checking
+**Configuration System** (`internal/config/config.go`):
+- YAML-based with environment variable expansion (`${VAR:-default}`)
+- Hierarchical loading: `configs/base.yml` + `configs/{ENVIRONMENT}.yml` 
+- Deep merging of environment-specific overrides
+- Validation of transport, rate limiting, and pricing configurations
 
-**Configuration** (`internal/config/config.go`):
+**Middleware Pipeline** (`internal/middleware/`):
+- **CRITICAL ORDER**: MetaURL → Debug → APIKey → Logging → RateLimit → CORS → TokenParsing → Streaming
+- `meta_url_rewriting.go`: Handles `/meta/{userID}/provider/` → `/provider/` transformation
+- `debug.go`: Request/response capture with colored terminal output (suppresses other logs)
+- `streaming.go`: Optimized streaming response handling (must be last middleware)
+- `token_parsing.go`: Metadata extraction and cost tracking callback execution
 
--   YAML-based configuration with environment-specific overlays
--   Supports cost tracking, rate limiting, and API key management features
--   Base config in `configs/base.yml`, environment configs in `configs/{env}.yml`
+**Feature Modules**:
+- `internal/cost/`: Multi-transport cost tracking (file, DynamoDB, Datadog) with async workers
+- `internal/ratelimit/`: Memory and Redis backends with token estimation
+- `internal/apikeys/`: DynamoDB-based key store supporting `iw:` prefix lookups
 
-**Middleware** (`internal/middleware/`):
+### Provider Interface Contract
 
--   Modular middleware system with specific order requirements
--   URL rewriting for meta routes (`/meta/{userID}/provider/`)
--   API key validation, rate limiting, CORS, logging, token parsing, streaming
+All providers must implement:
 
-**Features**:
+```go
+type Provider interface {
+    GetName() string
+    IsStreamingRequest(req *http.Request) bool
+    ParseResponseMetadata(responseBody io.Reader, isStreaming bool) (*LLMResponseMetadata, error)
+    Proxy() http.Handler
+    GetHealthStatus() map[string]interface{}
+    UserIDFromRequest(req *http.Request) string
+    RegisterExtraRoutes(router *mux.Router)
+    ValidateAPIKey(req *http.Request, keyStore APIKeyStore) error
+    ExtractRequestModelAndMessages(req *http.Request) (string, []string)
+}
+```
 
--   **Cost Tracking** (`internal/cost/`) - Multi-transport system (file, DynamoDB, Datadog)
--   **Rate Limiting** (`internal/ratelimit/`) - Memory and Redis backends with token estimation
--   **API Key Management** (`internal/apikeys/`) - DynamoDB-based key store with `iw:` prefix support
+### Configuration Loading Strategy
 
-### Provider Registration Pattern
+1. Load `configs/base.yml` (full configuration with defaults)
+2. Load `configs/${ENVIRONMENT}.yml` (environment-specific overrides, defaults to "dev")  
+3. Deep merge environment config into base config
+4. Validate merged configuration and parse pricing structures
+5. Create transport, rate limiter, and API key store instances
 
-Each provider implements the `Provider` interface and gets registered in main.go:
+### Middleware Processing Order
 
--   Route registration for direct (`/provider/`) and meta (`/meta/{userID}/provider/`) patterns
--   Streaming detection and response metadata extraction
--   Health status reporting and API key validation
+**CRITICAL**: The middleware order is essential for proper operation, especially streaming:
 
-### Configuration Loading
+1. **MetaURLRewritingMiddleware** (must be first): Rewrites `/meta/{userID}/provider/` to `/provider/`
+2. **DebugMiddleware** (early): Captures requests/responses, suppresses other logs when enabled
+3. **APIKeyValidationMiddleware**: Validates and replaces `iw:` prefixed keys from key store
+4. **LoggingMiddleware**: Request/response logging (skipped in debug mode)
+5. **RateLimitingMiddleware**: Token estimation and rate limit enforcement
+6. **CORSMiddleware**: CORS header management
+7. **TokenParsingMiddleware**: Response metadata extraction and callback execution
+8. **StreamingMiddleware** (must be last): Streaming response optimization
 
-1.  Load `configs/base.yml`
-2.  Overlay `configs/{ENVIRONMENT}.yml` (defaults to `dev`)
-3.  Validate configuration including transport and rate limiting settings
-4.  Parse model pricing structures for cost tracking
+## Local LLM Implementation Plan
 
-### Middleware Order (Critical)
+### Provider Configuration Structure
 
-1.  MetaURLRewritingMiddleware (must be first)
-2.  APIKeyValidationMiddleware (if enabled)
-3.  LoggingMiddleware
-4.  RateLimitingMiddleware (if enabled)
-5.  CORSMiddleware
-6.  TokenParsingMiddleware (with cost tracking callbacks)
-7.  StreamingMiddleware (must be last)
+```yaml
+local_llms:
+  gpt-oss:
+    enabled: true
+    default_model: "openai/gpt-oss-120b"
+    request_timeout: 100  # milliseconds
+    max_retries: 3
+    models:
+      openai/gpt-oss-120b:
+        enabled: true
+        endpoints:
+          - url: "http://192.168.1.100:8000/v1"
+            api_key: ""  # optional
+          - url: "http://192.168.1.101:8000/v1"
+  
+  qwen:
+    enabled: true
+    default_model: "qwen/qwen3-next-80b-a3b-thinking"
+    thinking_tag_fix: true  # Enable <think> processing
+    models:
+      qwen/qwen3-next-80b-a3b-thinking:
+        enabled: true
+        endpoints:
+          - url: "http://192.168.1.200:8001/v1"
+          - url: "http://192.168.1.201:8001/v1"
 
-## Development Notes
+claude_code_proxy:
+  enabled: true
+  target_provider: "qwen"
+  target_model: "qwen/qwen3-next-80b-a3b-thinking"
+  parameter_mapping:
+    max_tokens: "max_completion_tokens"
+```
 
--   **Go Version**: 1.24.5 (see go.mod)
--   **Router**: Gorilla Mux for HTTP routing
--   **Streaming**: Native streaming support across all providers with proper middleware handling
--   **Testing**: Integration tests require real API keys, unit tests use `-short -skip "Integration"`
--   **Logging**: Structured logging with slog, supports both pretty (dev) and JSON (prod) formats
--   **Docker**: Multi-environment support (dev/prod) with docker-compose configurations
--   **Rate Limiting**: Supports token estimation via Content-Length and message parsing with provider-specific character-per-token ratios
+### Request Flow Examples
 
-## Configuration Validation
+**1. Local LLM Request**: `POST /qwen/v1/chat/completions`
+- Route to qwen provider
+- Random endpoint selection from available URLs
+- Apply think tag processing if model name ends with `-thinking`
+- 100ms timeout with immediate failover
 
-Validate configuration files: `make validate-config configs/base.yml,configs/dev.yml`
+**2. Claude Code Request**: `POST /cc-qwen/v1/messages` (Anthropic format)
+- Convert Anthropic messages format to OpenAI chat/completions  
+- Apply parameter mapping (max_tokens → max_completion_tokens)
+- Route to configured target_provider (qwen) using target_model
+- Convert response back to Anthropic format
+- Apply think tag processing
 
-Use `--version` flag to see loaded configuration and verify setup.
+**3. Debug Mode**: `./llm-proxy --llm-debug`
+- Suppress all standard logs
+- Show curl-equivalent output: method, URL, headers, JSON body
+- Color coding: cyan for requests, green for responses
+- Pretty-print JSON with endpoint selection and retry information
+
+### Think Tag Processing Logic
+
+**Non-streaming responses**:
+- If response contains `</think>` tag anywhere, prepend `<think>` at the beginning
+- Only process if response doesn't already start with `<think>`
+- Applied only to qwen provider responses
+
+**Streaming responses**:  
+- If model name ends with `-thinking`, inject `<think>` at stream start
+- Handle `</think>` tag detection during streaming
+- Buffer management to avoid corrupting partial JSON chunks
+
+### Error Handling Strategy
+
+**Connection Failures**:
+- 100ms timeout per endpoint attempt
+- Immediate failover to next endpoint in list
+- Failed endpoints immediately rejoin rotation (no blacklisting)
+- Return OpenAI-format error: "Sorry the backend server XXX is currently not available..."
+
+**Configuration Errors**:
+- Validate endpoint URLs include full paths (e.g., `/v1`)
+- Ensure default_model exists in provider's models configuration
+- Warn about missing API keys but allow optional authentication
+
+## Development Commands
+
+### Build and Run
+```bash
+# Development workflow
+make install build    # Install deps and build binary
+make dev             # Run with live reload
+make run             # Run built binary
+
+# Debug mode
+./bin/llm-proxy --llm-debug  # Enable request/response debugging
+
+# Configuration validation
+make validate-config configs/base.yml,configs/dev.yml
+```
+
+### Testing Strategy
+```bash
+# Unit tests (no API keys required)
+make test
+
+# Integration tests (requires API keys)
+make test-all
+make test-openai
+make test-anthropic  
+make test-gemini
+
+# Health check verification
+make test-health
+
+# Environment setup check
+make env-check
+```
+
+### Code Quality
+```bash
+make check    # Run fmt + vet + lint
+make fmt      # Format Go code  
+make vet      # Run go vet
+make lint     # Run golint
+```
+
+## Configuration Management
+
+### Environment Variables
+
+**Required for Integration Testing**:
+```bash
+export OPENAI_API_KEY=your_openai_key
+export ANTHROPIC_API_KEY=your_anthropic_key  
+export GEMINI_API_KEY=your_gemini_key
+```
+
+**Optional Runtime Configuration**:
+```bash
+export PORT=9002                    # Server port (default: 9002)
+export ENVIRONMENT=dev              # Config environment (dev/staging/production)
+export LOG_LEVEL=debug              # Logging level
+export LOG_FORMAT=json              # Log format (json/pretty)
+```
+
+**Cost Tracking**:
+```bash
+export COST_TRACKING_FILE=./cost.jsonl  # File transport fallback
+export DD_API_KEY=datadog_key           # Datadog transport
+```
+
+### Configuration File Structure
+
+- `configs/base.yml`: Complete configuration with all providers and models
+- `configs/dev.yml`: Development overrides (typically disables cost tracking/rate limiting)
+- `configs/staging.yml`: Staging environment settings
+- `configs/production.yml`: Production configuration with full feature enablement
+
+### Model Pricing Configuration
+
+```yaml
+providers:
+  openai:
+    models:
+      gpt-4:
+        pricing:
+          tiers:
+            - threshold: 0      # Default pricing
+              input: 30.0       # $30 per 1M input tokens
+              output: 60.0      # $60 per 1M output tokens
+            - threshold: 1000000 # Volume pricing above 1M tokens
+              input: 25.0
+              output: 50.0
+          overrides:
+            gpt-4-turbo: 
+              input: 10.0
+              output: 30.0
+```
+
+## Key Implementation Details
+
+### Streaming Response Handling
+
+- `StreamingMiddleware` must be the last middleware in the chain
+- Streaming detection is provider-specific via `IsStreamingRequest()`
+- Response metadata parsing works for both streaming and non-streaming responses
+- Gzip decompression handled by `DecompressResponseIfNeeded()` utility
+
+### Cost Tracking Flow
+
+1. `TokenParsingMiddleware` extracts `LLMResponseMetadata` from responses
+2. Metadata includes tokens, model, provider, request ID
+3. Callbacks execute asynchronously if async mode enabled
+4. Multiple transports write cost data simultaneously (file, DynamoDB, Datadog)
+
+### Rate Limiting Strategy
+
+- Token estimation via Content-Length (`BytesPerToken`) or message parsing (`CharsPerToken`)
+- Provider-specific character-per-token ratios for better accuracy
+- "Optimistic first request" allows initial traffic through even if over limit
+- Supports per-key, per-user, per-model overrides
+
+### API Key Management
+
+- Standard keys pass through unchanged
+- Keys prefixed with `iw:` trigger DynamoDB lookup for actual provider key
+- Failed key validation returns 401 with provider-specific error format
+- Key store validates key status (enabled/disabled) and provider association
+
+## Testing & Validation
+
+### Integration Test Requirements
+
+- Real API keys needed for provider integration tests
+- Tests validate streaming and non-streaming requests
+- Health check tests verify all provider status endpoints
+- Rate limiting tests require memory backend (Redis not supported in tests)
+
+### Configuration Validation
+
+Use `--validate-config` flag to test configuration files:
+```bash
+./llm-proxy --validate-config configs/base.yml,configs/dev.yml
+```
+
+Validates transport configuration, rate limiting setup, and pricing structures.
+
+### Version Information
+
+Use `--version` flag to see loaded configuration and build information:
+```bash  
+./llm-proxy --version
+```
+
+Shows complete configuration in both human-readable and JSON formats.
+
+## Implementation Guidelines
+
+### Adding New Providers
+
+1. Create new provider file implementing `Provider` interface
+2. Register in `main.go` provider registration section  
+3. Add corresponding test file following existing patterns
+4. Update configuration schema if needed
+5. Add health check implementation
+6. Implement streaming detection logic
+
+### Middleware Development
+
+1. Follow established middleware patterns in `internal/middleware/`
+2. Understand middleware order requirements (especially streaming)
+3. Handle both streaming and non-streaming requests appropriately
+4. Add comprehensive tests including edge cases
+5. Consider provider-specific behavior differences
+
+### Configuration Changes
+
+1. Update YAML schema in `internal/config/config.go`
+2. Add validation logic in `Validate()` methods
+3. Update environment variable expansion if needed
+4. Test configuration loading and merging
+5. Update example configurations in `configs/` directory
+
+The codebase emphasizes modularity, comprehensive testing, and robust error handling. When implementing new features, follow the established patterns for provider registration, middleware ordering, and configuration management.
