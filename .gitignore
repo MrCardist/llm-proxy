@@ -27,4 +27,8 @@ ehthumbs.db
 Thumbs.db
 
 # Log files
-logs/ 
+logs/
+
+# Vibecoders
+CLAUDE.md 
+
