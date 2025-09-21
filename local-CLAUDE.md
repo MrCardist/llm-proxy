@@ -192,8 +192,15 @@ make install build    # Install deps and build binary
 make dev             # Run with live reload
 make run             # Run built binary
 
-# Debug mode
-./bin/llm-proxy --llm-debug  # Enable request/response debugging
+# Standard startup with environment configuration
+set -a && source .env && set +a && ./bin/llm-proxy
+
+# Debug mode with explicit port (recommended for testing)
+set -a && source .env && set +a && PORT=9002 ./bin/llm-proxy --llm-debug
+
+# Always specify explicit port in testing commands to ensure consistency
+# regardless of .env settings - this prevents port conflicts and makes
+# testing predictable across different environment configurations
 
 # Configuration validation
 make validate-config configs/base.yml,configs/dev.yml
