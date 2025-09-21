@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,7 +9,9 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"regexp"
 	"strings"
@@ -23,8 +26,10 @@ type LocalLLMProvider struct {
 	name              string
 	config            *config.LocalLLMProviderConfig
 	client            *http.Client
+	requestTimeout    time.Duration
 	thinkTagRegex     *regexp.Regexp
 	endThinkTagRegex  *regexp.Regexp
+	proxy             *httputil.ReverseProxy
 }
 
 // NewLocalLLMProvider creates a new local LLM provider
@@ -34,16 +39,52 @@ func NewLocalLLMProvider(name string, config *config.LocalLLMProviderConfig) *Lo
 		timeout = time.Duration(config.RequestTimeout) * time.Second
 	}
 
-	return &LocalLLMProvider{
-		name:   name,
-		config: config,
-		client: &http.Client{
-			Timeout: timeout,
+	// Create HTTP client with fast connection timeout but long request timeout
+	// Connection timeout: 100ms (for local network with 3ms latency)
+	// Request timeout: configured value (default 120s for LLM processing)
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   100 * time.Millisecond, // Fast connection timeout for local network
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ResponseHeaderTimeout: timeout, // Use full timeout for response headers
+			DisableCompression:    true,    // Let client handle compression
+			MaxIdleConns:          10,      // Reasonable for local LLM connections
+			IdleConnTimeout:       90 * time.Second,
 		},
-		// Regex to detect if response already has <think> tags
+	}
+
+	// Create a reverse proxy that will handle dynamic endpoint selection
+	provider := &LocalLLMProvider{
+		name:           name,
+		config:         config,
+		requestTimeout: timeout,
+		client:         client,
+		// Regex to detect think tags
 		thinkTagRegex:    regexp.MustCompile(`(?i)<think>`),
 		endThinkTagRegex: regexp.MustCompile(`(?i)</think>`),
 	}
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			// This will be set dynamically per request
+		},
+		Transport: client.Transport,
+		ModifyResponse: func(resp *http.Response) error {
+			// Only process non-streaming responses here
+			if provider.config.ThinkingTagFix && !provider.isStreamingResponse(resp) {
+				return provider.processResponseThinkTags(resp)
+			}
+			return nil
+		},
+	}
+
+	provider.proxy = proxy
+
+	return provider
 }
 
 // GetName returns the provider name
@@ -74,9 +115,21 @@ func (p *LocalLLMProvider) selectEndpoint(modelName string) (*config.LocalLLMEnd
 		return nil, fmt.Errorf("no endpoints configured for model %s", modelName)
 	}
 
+	// Filter out empty URLs
+	var validEndpoints []config.LocalLLMEndpointConfig
+	for _, endpoint := range model.Endpoints {
+		if strings.TrimSpace(endpoint.URL) != "" {
+			validEndpoints = append(validEndpoints, endpoint)
+		}
+	}
+	
+	if len(validEndpoints) == 0 {
+		return nil, fmt.Errorf("no valid endpoints configured for model %s", modelName)
+	}
+
 	// Random selection (stateless round-robin as specified)
 	rand.Seed(time.Now().UnixNano())
-	selectedEndpoint := model.Endpoints[rand.Intn(len(model.Endpoints))]
+	selectedEndpoint := validEndpoints[rand.Intn(len(validEndpoints))]
 	
 	return &selectedEndpoint, nil
 }
@@ -121,20 +174,55 @@ func (p *LocalLLMProvider) makeRequest(req *http.Request, modelName string) (*ht
 			continue
 		}
 
-		// Clone the original request
-		clonedReq := req.Clone(context.Background())
-		clonedReq.URL.Scheme = targetURL.Scheme
-		clonedReq.URL.Host = targetURL.Host
-		clonedReq.URL.Path = strings.TrimSuffix(targetURL.Path, "/") + strings.TrimPrefix(req.URL.Path, "/"+p.name)
-		clonedReq.Host = targetURL.Host
+		// Create a new request instead of cloning to avoid RequestURI issues
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read request body: %w", err)
+			continue
+		}
+		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore original body
+		
+		// Construct the path, avoiding double /v1
+		endpointPath := strings.TrimSuffix(targetURL.Path, "/")
+		requestPath := strings.TrimPrefix(req.URL.Path, "/"+p.name)
+		
+		var finalPath string
+		// If endpoint already ends with /v1 and request starts with /v1, remove one
+		if strings.HasSuffix(endpointPath, "/v1") && strings.HasPrefix(requestPath, "/v1") {
+			finalPath = endpointPath + strings.TrimPrefix(requestPath, "/v1")
+		} else {
+			finalPath = endpointPath + requestPath
+		}
+		
+		// Create target URL
+		targetRequestURL := &url.URL{
+			Scheme:   targetURL.Scheme,
+			Host:     targetURL.Host,
+			Path:     finalPath,
+			RawQuery: req.URL.RawQuery,
+		}
+		
+		// Create new request
+		clonedReq, err := http.NewRequestWithContext(context.Background(), req.Method, targetRequestURL.String(), bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			lastErr = fmt.Errorf("failed to create request: %w", err)
+			continue
+		}
+		
+		// Copy headers
+		for key, values := range req.Header {
+			for _, value := range values {
+				clonedReq.Header.Add(key, value)
+			}
+		}
 
 		// Set API key if provided
 		if endpoint.APIKey != "" {
 			clonedReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
 		}
 
-		// Make the request with 100ms timeout as specified
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		// Make the request with configured timeout
+		ctx, cancel := context.WithTimeout(context.Background(), p.requestTimeout)
 		clonedReq = clonedReq.WithContext(ctx)
 		
 		resp, err := p.client.Do(clonedReq)
@@ -151,7 +239,123 @@ func (p *LocalLLMProvider) makeRequest(req *http.Request, modelName string) (*ht
 	return nil, fmt.Errorf("all endpoints failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-// processThinkTags processes the response to add <think> tags if needed (for Qwen)
+// isStreamingResponse checks if the response is a streaming response
+func (p *LocalLLMProvider) isStreamingResponse(resp *http.Response) bool {
+	contentType := resp.Header.Get("Content-Type")
+	return strings.Contains(contentType, "text/event-stream")
+}
+
+// processStreamingThinkTags modifies streaming responses to add thinking tags
+func (p *LocalLLMProvider) processStreamingThinkTags(resp *http.Response) error {
+	// For streaming, we need to process each chunk individually
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+
+	// Only process for models ending with "-thinking"
+	modelName := p.extractModelNameFromRequest()
+	if !strings.HasSuffix(modelName, "-thinking") {
+		resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		return nil
+	}
+
+	content := string(bodyBytes)
+	lines := strings.Split(content, "\n")
+	var processedLines []string
+	firstContentChunk := true
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"delta":`) {
+			// Parse the JSON chunk
+			jsonPart := strings.TrimPrefix(line, "data: ")
+			if jsonPart == "[DONE]" {
+				processedLines = append(processedLines, line)
+				continue
+			}
+
+			var chunk map[string]interface{}
+			if json.Unmarshal([]byte(jsonPart), &chunk) == nil {
+				// Check if this chunk has delta content
+				if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+					if choice, ok := choices[0].(map[string]interface{}); ok {
+						if delta, ok := choice["delta"].(map[string]interface{}); ok {
+							if content, ok := delta["content"].(string); ok && content != "" {
+								// Add <thinking> to the first content chunk
+								if firstContentChunk {
+									delta["content"] = "<thinking>" + content
+									firstContentChunk = false
+								} else {
+									// Replace </think> with </thinking> in any chunk
+									delta["content"] = strings.ReplaceAll(content, "</think>", "</thinking>")
+								}
+
+								// Re-encode the modified chunk
+								if modifiedJSON, err := json.Marshal(chunk); err == nil {
+									processedLines = append(processedLines, "data: "+string(modifiedJSON))
+									continue
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		// If we couldn't process the line, keep it as-is
+		processedLines = append(processedLines, line)
+	}
+
+	// Update the response body
+	processedContent := strings.Join(processedLines, "\n")
+	resp.Body = io.NopCloser(strings.NewReader(processedContent))
+	resp.ContentLength = int64(len(processedContent))
+	resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(processedContent)))
+
+	return nil
+}
+
+// extractModelNameFromRequest gets model name from the current request context
+func (p *LocalLLMProvider) extractModelNameFromRequest() string {
+	// For now, return the default model - this could be enhanced to get from current request
+	return p.config.DefaultModel
+}
+
+// processResponseThinkTags modifies the HTTP response to add think tags
+func (p *LocalLLMProvider) processResponseThinkTags(resp *http.Response) error {
+	// Read the response body
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+
+	// Get model name from the response to check if it ends with "-thinking"
+	var response map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+		// If we can't parse, just return the body as-is
+		resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		return nil
+	}
+
+	// Get model name from response
+	modelName := ""
+	if model, ok := response["model"].(string); ok {
+		modelName = model
+	}
+
+	// Process think tags
+	processedBody := p.processThinkTags(bodyBytes, false, modelName)
+
+	// Update the response body and Content-Length
+	resp.Body = io.NopCloser(bytes.NewBuffer(processedBody))
+	resp.ContentLength = int64(len(processedBody))
+	resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(processedBody)))
+
+	return nil
+}
+
+// processThinkTags processes the response to add <thinking> tags if needed (for Qwen)
 func (p *LocalLLMProvider) processThinkTags(responseBody []byte, isStreaming bool, modelName string) []byte {
 	if !p.config.ThinkingTagFix {
 		return responseBody
@@ -162,26 +366,222 @@ func (p *LocalLLMProvider) processThinkTags(responseBody []byte, isStreaming boo
 		return responseBody
 	}
 
-	content := string(responseBody)
-	
-	// Check if response already has <think> at the start
-	if p.thinkTagRegex.MatchString(content) {
-		return responseBody // Already has think tag, don't modify
-	}
-
 	if isStreaming {
-		// For streaming: always inject <think> at the beginning for -thinking models
-		if !strings.HasPrefix(content, "<think>") {
-			content = "<think>" + content
-		}
-	} else {
-		// For non-streaming: if response contains </think>, prepend <think> at start
-		if p.endThinkTagRegex.MatchString(content) && !strings.HasPrefix(content, "<think>") {
-			content = "<think>" + content
+		// Streaming processing is now handled by processStreamingThinkTags
+		return responseBody
+	}
+
+	// For non-streaming: always add <thinking> and replace </think> with </thinking>
+	var response map[string]interface{}
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		// If we can't parse JSON, return unchanged
+		return responseBody
+	}
+
+	// Navigate to choices[0].message.content
+	if choices, ok := response["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if message, ok := choice["message"].(map[string]interface{}); ok {
+				if content, ok := message["content"].(string); ok {
+					// Check if content already starts with <think>
+					if strings.HasPrefix(content, "<think>") {
+						// Already has think tag, keep as-is
+						message["content"] = content
+					} else {
+						// Add <think> at start (keep </think> unchanged)
+						processedContent := "<think>" + content
+						message["content"] = processedContent
+					}
+					
+					// Re-encode the modified response
+					modifiedResponse, err := json.Marshal(response)
+					if err == nil {
+						return modifiedResponse
+					}
+				}
+			}
 		}
 	}
 
-	return []byte(content)
+	return responseBody
+}
+
+// SSEChunk models one streamed "chat.completion.chunk" event  
+type SSEChunk struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index   int `json:"index"`
+		Delta   struct {
+			Role    string `json:"role,omitempty"`
+			Content string `json:"content,omitempty"`
+		} `json:"delta"`
+		Logprobs       interface{} `json:"logprobs"`
+		FinishReason   interface{} `json:"finish_reason"`
+		TokenIDs       interface{} `json:"token_ids"`
+		PromptTokenIDs interface{} `json:"prompt_token_ids,omitempty"`
+	} `json:"choices"`
+}
+
+// chunkState tracks state across streaming chunks for GPT-OSS pattern detection
+type chunkState struct {
+	step1Assistant bool // Detected "assistant" in chunk
+	step2Empty     bool // Detected "" after "assistant"  
+	step3Final     bool // Ready to detect "final"
+}
+
+// handleStreamingWithThinkTags handles streaming requests with think tag processing
+func (p *LocalLLMProvider) handleStreamingWithThinkTags(w http.ResponseWriter, req *http.Request, endpoint *config.LocalLLMEndpointConfig, targetURL *url.URL, modelName string) {
+	// Create request to backend
+	bodyBytes, err := io.ReadAll(req.Body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusInternalServerError)
+		return
+	}
+	req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// Construct target URL with smart /v1 handling
+	endpointPath := strings.TrimSuffix(targetURL.Path, "/")
+	requestPath := strings.TrimPrefix(req.URL.Path, "/"+p.name)
+	
+	var finalPath string
+	if strings.HasSuffix(endpointPath, "/v1") && strings.HasPrefix(requestPath, "/v1") {
+		finalPath = endpointPath + strings.TrimPrefix(requestPath, "/v1")
+	} else {
+		finalPath = endpointPath + requestPath
+	}
+	
+	targetRequestURL := &url.URL{
+		Scheme:   targetURL.Scheme,
+		Host:     targetURL.Host,
+		Path:     finalPath,
+		RawQuery: req.URL.RawQuery,
+	}
+
+	// Create new request to backend
+	backendReq, err := http.NewRequestWithContext(context.Background(), req.Method, targetRequestURL.String(), bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create backend request: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Copy headers
+	for key, values := range req.Header {
+		for _, value := range values {
+			backendReq.Header.Add(key, value)
+		}
+	}
+
+	// Set API key if provided
+	if endpoint.APIKey != "" {
+		backendReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
+	}
+
+	// Send request to backend
+	resp, err := p.client.Do(backendReq)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Backend error: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Forward response headers
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	flusher, _ := w.(http.Flusher) // Optional - don't fail if not available
+
+	reader := bufio.NewReader(resp.Body)
+	
+	// State for processing
+	var firstContentInserted bool
+	var recentContent []string // Sliding window for GPT-OSS pattern detection
+	
+	// Determine processing type based on model
+	isQwenModel := strings.HasSuffix(modelName, "-thinking")
+	isGptOssModel := strings.Contains(strings.ToLower(modelName), "gpt-oss")
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				log.Println("Error reading backend stream:", err)
+			}
+			break
+		}
+
+		// We only touch lines starting with "data: "
+		if strings.HasPrefix(line, "data: ") {
+			jsonPart := strings.TrimPrefix(line, "data: ")
+			jsonPart = strings.TrimSpace(jsonPart)
+
+			if jsonPart != "" && jsonPart != "[DONE]" {
+				var chunk SSEChunk
+				if err := json.Unmarshal([]byte(jsonPart), &chunk); err == nil {
+					if chunk.Object == "chat.completion.chunk" {
+						for i := range chunk.Choices {
+							if isQwenModel {
+								// Qwen logic: Add <think> to first content chunk
+								if !firstContentInserted && chunk.Choices[i].Delta.Content != "" {
+									chunk.Choices[i].Delta.Content = "<think>" + chunk.Choices[i].Delta.Content
+									firstContentInserted = true
+								}
+							} else if isGptOssModel {
+								// GPT-OSS logic: Sliding window approach
+								content := chunk.Choices[i].Delta.Content
+								role := chunk.Choices[i].Delta.Role
+								
+								// Add content to sliding window (include roles and content)
+								if role != "" {
+									recentContent = append(recentContent, role)
+								} else if content != "" {
+									recentContent = append(recentContent, content)
+								} else {
+									recentContent = append(recentContent, "")
+								}
+								
+								// Keep sliding window of size 3
+								if len(recentContent) > 3 {
+									recentContent = recentContent[1:]
+								}
+								
+								// Replace "analysis" with "<think>" in first occurrence  
+								if !firstContentInserted && role == "" && content == "analysis" {
+									chunk.Choices[i].Delta.Content = "<think>"
+									firstContentInserted = true
+								}
+								
+								// Check for pattern: "assistant" -> "" -> "final"
+								if len(recentContent) == 3 &&
+									recentContent[0] == "assistant" &&
+									recentContent[1] == "" &&
+									recentContent[2] == "final" {
+									// The current chunk is "final", modify it
+									chunk.Choices[i].Delta.Content = "final</think>"
+									log.Println("GPT-OSS: Appended </think> after detecting sequence.")
+								}
+							}
+						}
+					}
+					modified, _ := json.Marshal(chunk)
+					line = "data: " + string(modified) + "\n"
+				}
+			}
+		}
+
+		// Send as fast as possible to client
+		if _, err := w.Write([]byte(line)); err != nil {
+			log.Println("Error writing to client:", err)
+			break
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 }
 
 // Proxy returns the HTTP handler for this provider
@@ -189,10 +589,9 @@ func (p *LocalLLMProvider) Proxy() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// Get model name from request
 		modelName := p.getModelNameFromRequest(req)
-		isStreaming := p.IsStreamingRequest(req)
 
-		// Make request with retry logic
-		resp, err := p.makeRequest(req, modelName)
+		// Select endpoint for this request
+		endpoint, err := p.selectEndpoint(modelName)
 		if err != nil {
 			// Return error in OpenAI JSON format as specified
 			w.Header().Set("Content-Type", "application/json")
@@ -207,30 +606,59 @@ func (p *LocalLLMProvider) Proxy() http.Handler {
 			json.NewEncoder(w).Encode(errorResponse)
 			return
 		}
-		defer resp.Body.Close()
 
-		// Copy headers
-		for key, values := range resp.Header {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-
-		// Set status code
-		w.WriteHeader(resp.StatusCode)
-
-		// Read and process response body
-		responseBody, err := io.ReadAll(resp.Body)
+		// Parse the endpoint URL
+		targetURL, err := url.Parse(endpoint.URL)
 		if err != nil {
-			log.Printf("Error reading response body: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			errorResponse := map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": fmt.Sprintf("Invalid endpoint URL: %v", err),
+					"type":    "service_unavailable",
+					"code":    "service_unavailable",
+				},
+			}
+			json.NewEncoder(w).Encode(errorResponse)
 			return
 		}
 
-		// Process think tags if needed
-		processedBody := p.processThinkTags(responseBody, isStreaming, modelName)
+		// Set up the reverse proxy director for this request
+		p.proxy.Director = func(req *http.Request) {
+			req.URL.Scheme = targetURL.Scheme
+			req.URL.Host = targetURL.Host
+			req.Host = targetURL.Host
+			
+			// Handle path construction with smart /v1 handling
+			endpointPath := strings.TrimSuffix(targetURL.Path, "/")
+			requestPath := strings.TrimPrefix(req.URL.Path, "/"+p.name)
+			
+			// If endpoint already ends with /v1 and request starts with /v1, remove one
+			if strings.HasSuffix(endpointPath, "/v1") && strings.HasPrefix(requestPath, "/v1") {
+				req.URL.Path = endpointPath + strings.TrimPrefix(requestPath, "/v1")
+			} else {
+				req.URL.Path = endpointPath + requestPath
+			}
+			
+			// Set API key if provided
+			if endpoint.APIKey != "" {
+				req.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
+			}
+		}
 
-		// Write the response
-		w.Write(processedBody)
+		// Check if this is a streaming request that needs think tag processing
+		isStreaming := p.IsStreamingRequest(req)
+		isQwenModel := strings.HasSuffix(modelName, "-thinking")
+		isGptOssModel := strings.Contains(strings.ToLower(modelName), "gpt-oss")
+		shouldModifyStream := p.config.ThinkingTagFix && isStreaming && (isQwenModel || isGptOssModel)
+
+		if shouldModifyStream {
+			// Handle streaming with think tag processing using direct approach
+			p.handleStreamingWithThinkTags(w, req, endpoint, targetURL, modelName)
+		} else {
+			// Use the reverse proxy normally
+			p.proxy.ServeHTTP(w, req)
+		}
 	})
 }
 
@@ -248,6 +676,11 @@ func (p *LocalLLMProvider) GetHealthStatus() map[string]interface{} {
 		}
 
 		for _, endpoint := range modelConfig.Endpoints {
+			// Skip empty URLs
+			if strings.TrimSpace(endpoint.URL) == "" {
+				continue
+			}
+			
 			endpointStatus := map[string]interface{}{
 				"model":    modelName,
 				"url":      endpoint.URL,
