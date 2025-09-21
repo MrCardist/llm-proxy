@@ -196,11 +196,11 @@ make run             # Run built binary
 set -a && source .env && set +a && ./bin/llm-proxy
 
 # Debug mode with explicit port (recommended for testing)
-set -a && source .env && set +a && PORT=9002 ./bin/llm-proxy --llm-debug
+set -a && source .env && set +a && PORT=9003 ./bin/llm-proxy --llm-debug
 
-# Always specify explicit port in testing commands to ensure consistency
-# regardless of .env settings - this prevents port conflicts and makes
-# testing predictable across different environment configurations
+# Always specify PORT=9003 for testing to avoid conflicts with production
+# instance on 9002 - this prevents port conflicts and makes testing
+# predictable across different environment configurations
 
 # Configuration validation
 make validate-config configs/base.yml,configs/dev.yml
