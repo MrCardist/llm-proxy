@@ -534,17 +534,27 @@ func runServer(yamlConfig *config.YAMLConfig) {
 
 	// Register Claude Code proxy if enabled
 	if yamlConfig.ClaudeCodeProxy != nil && yamlConfig.ClaudeCodeProxy.Enabled {
-		targetProvider := globalProviderManager.GetProvider(yamlConfig.ClaudeCodeProxy.TargetProvider)
-		if targetProvider != nil {
-			claudeCodeProxy := providers.NewClaudeCodeProxy("cc-qwen", yamlConfig.ClaudeCodeProxy, targetProvider)
-			globalProviderManager.RegisterProvider(claudeCodeProxy)
-			if !debugMode {
-				logger.Info("Registered Claude Code proxy", "proxy", "cc-qwen", "target_provider", yamlConfig.ClaudeCodeProxy.TargetProvider, "target_model", yamlConfig.ClaudeCodeProxy.TargetModel)
+		// Create Claude Code proxy with provider manager for unified routing
+		claudeCodeProxy := providers.NewClaudeCodeProxy("cc-local", yamlConfig.ClaudeCodeProxy, globalProviderManager)
+		globalProviderManager.RegisterProvider(claudeCodeProxy)
+		if !debugMode {
+			supportedProviders := yamlConfig.ClaudeCodeProxy.SupportedProviders
+			if len(supportedProviders) == 0 {
+				// Fallback to default supported providers
+				supportedProviders = []string{"qwen", "gpt-oss"}
 			}
-		} else {
-			if !debugMode {
-				logger.Warn("Claude Code proxy target provider not found", "target_provider", yamlConfig.ClaudeCodeProxy.TargetProvider)
-			}
+			logger.Info("Registered Claude Code proxy", 
+				"proxy", "cc-local", 
+				"endpoint", "/cc-local/v1/messages",
+				"supported_providers", supportedProviders)
+		}
+	}
+
+	// After all providers are registered, set the provider manager on local LLM providers
+	// This allows the /local unified endpoint to route to all local providers
+	for _, provider := range globalProviderManager.GetAllProviders() {
+		if localLLM, ok := provider.(*providers.LocalLLMProvider); ok {
+			localLLM.SetProviderManager(globalProviderManager)
 		}
 	}
 
