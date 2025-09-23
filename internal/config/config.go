@@ -199,10 +199,28 @@ type LocalLLMEndpointConfig struct {
 
 // ClaudeCodeProxyConfig represents configuration for Claude Code proxy
 type ClaudeCodeProxyConfig struct {
-	Enabled          bool              `yaml:"enabled"`
-	TargetProvider   string            `yaml:"target_provider"`   // Which local LLM provider to route to
-	TargetModel      string            `yaml:"target_model"`      // Always use this model
-	ParameterMapping map[string]string `yaml:"parameter_mapping"` // Parameter name mappings (e.g., max_tokens -> max_completion_tokens)
+	Enabled              bool                        `yaml:"enabled"`
+	UnifiedEndpoint      string                      `yaml:"unified_endpoint,omitempty"`      // Single endpoint for all local models (e.g., "/cc-local/v1/messages")
+	SupportedProviders   []string                    `yaml:"supported_providers,omitempty"`   // Only local models supported initially (e.g., ["qwen", "gpt-oss"])
+	ModelRouting         ClaudeCodeModelRouting      `yaml:"model_routing,omitempty"`         // Model routing configuration
+	ParameterMapping     map[string]string           `yaml:"parameter_mapping,omitempty"`     // Parameter name mappings
+	ThinkTagConversion   ClaudeCodeThinkTagConfig    `yaml:"think_tag_conversion,omitempty"`  // Think tag conversion settings
+	
+	// Legacy fields for backward compatibility
+	TargetProvider       string                      `yaml:"target_provider,omitempty"`       // Deprecated: use model routing instead
+	TargetModel          string                      `yaml:"target_model,omitempty"`          // Deprecated: use model routing instead
+}
+
+// ClaudeCodeModelRouting represents model routing configuration
+type ClaudeCodeModelRouting struct {
+	QwenModels   []string `yaml:"qwen_models,omitempty"`   // Patterns for qwen models
+	GptOssModels []string `yaml:"gpt_oss_models,omitempty"` // Patterns for gpt-oss models
+}
+
+// ClaudeCodeThinkTagConfig represents think tag conversion configuration
+type ClaudeCodeThinkTagConfig struct {
+	Enabled                   bool `yaml:"enabled"`
+	ConvertToAnthropicFormat  bool `yaml:"convert_to_anthropic_format"` // Convert <think> tags to Anthropic thinking format
 }
 
 // ModelConfig represents configuration for a specific model

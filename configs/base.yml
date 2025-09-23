@@ -631,6 +631,17 @@ local_llms:
           - url: "${QWEN_ENDPOINT_2:-http://192.168.1.201:8001/v1}"
             api_key: "${QWEN_API_KEY:-}"
         pricing:
+          input: 0.0  # Local model - no cost
+          output: 0.0
+      "qwen/qwen3-next-80b-a3b-instruct":
+        enabled: true
+        aliases: ["qwen-instruct", "qwen-80b-instruct"]
+        endpoints:
+          - url: "${QWEN_ENDPOINT_1:-http://192.168.1.200:8001/v1}"
+            api_key: "${QWEN_API_KEY:-}"
+          - url: "${QWEN_ENDPOINT_2:-http://192.168.1.201:8001/v1}"
+            api_key: "${QWEN_API_KEY:-}"
+        pricing:
           input: 0.05  # Example local LLM pricing
           output: 0.2
 

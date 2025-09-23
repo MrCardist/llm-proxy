@@ -23,5 +23,17 @@ local_llms:
 # Enable Claude Code proxy for development
 claude_code_proxy:
   enabled: true  # Enable for development testing
+  unified_endpoint: "/cc-local/v1/messages"  # Single endpoint for all local models
+  supported_providers: ["qwen", "gpt-oss"]   # Only local models supported initially
+  model_routing:
+    # Route based on model name in request body to appropriate provider
+    qwen_models: ["qwen/qwen3-next-80b-a3b-thinking", "qwen/*", "*-thinking"]
+    gpt_oss_models: ["openai/gpt-oss-120b", "gpt-oss", "gpt-oss-*", "openai/gpt-oss-*"]
+  parameter_mapping:
+    max_tokens: "max_tokens"  # Anthropic max_tokens -> OpenAI max_tokens
+    system: "system_message"  # Handle Anthropic system messages
+  think_tag_conversion:
+    enabled: true
+    convert_to_anthropic_format: true  # Convert <think> tags to Anthropic thinking format
 
 
