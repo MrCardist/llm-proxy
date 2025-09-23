@@ -131,10 +131,18 @@ local_llms:
 
 claude_code_proxy:
   enabled: true
-  target_provider: "qwen"
-  target_model: "qwen/qwen3-next-80b-a3b-thinking"
+  unified_endpoint: "/cc-local/v1/messages"  # Single endpoint for all local models
+  supported_providers: ["qwen", "gpt-oss"]   # Only local models supported initially
+  model_routing:
+    # Route based on model name in request body to appropriate provider
+    qwen_models: ["qwen/qwen3-next-80b-a3b-thinking", "qwen/*", "*-thinking"]
+    gpt_oss_models: ["openai/gpt-oss-120b", "gpt-oss", "gpt-oss-*", "openai/gpt-oss-*"]
   parameter_mapping:
-    max_tokens: "max_completion_tokens"
+    max_tokens: "max_tokens"  # Anthropic max_tokens -> OpenAI max_tokens
+    system: "system_message"  # Handle Anthropic system messages
+  think_tag_conversion:
+    enabled: true
+    convert_to_anthropic_format: true  # Convert <think> tags to Anthropic thinking format
 ```
 
 ### Request Flow Examples
@@ -145,12 +153,17 @@ claude_code_proxy:
 - Apply think tag processing if model name ends with `-thinking`
 - 100ms timeout with immediate failover
 
-**2. Claude Code Request**: `POST /cc-qwen/v1/messages` (Anthropic format)
-- Convert Anthropic messages format to OpenAI chat/completions  
-- Apply parameter mapping (max_tokens → max_completion_tokens)
-- Route to configured target_provider (qwen) using target_model
-- Convert response back to Anthropic format
-- Apply think tag processing
+**2. Claude Code Request**: `POST /cc-local/v1/messages` (Anthropic format)
+- Accept Anthropic API format requests with model-based routing
+- Extract model name from request body to determine target provider:
+  - `qwen/*` or `*-thinking` models → route to qwen provider
+  - `gpt-oss*` or `openai/gpt-oss*` models → route to gpt-oss provider
+- Convert Anthropic messages format to OpenAI chat/completions format
+- Apply parameter mapping (max_tokens, system messages, etc.)
+- Route to appropriate local provider based on model name
+- Convert OpenAI response back to Anthropic format
+- Convert <think> tags to Anthropic thinking format if present
+- Return errors in Anthropic error format
 
 **3. Debug Mode**: `./llm-proxy --llm-debug`
 - Suppress all standard logs
@@ -170,13 +183,54 @@ claude_code_proxy:
 - Handle `</think>` tag detection during streaming
 - Buffer management to avoid corrupting partial JSON chunks
 
+### Claude Code Proxy Implementation Requirements
+
+**Unified Endpoint Design**:
+- Single endpoint `/cc-local/v1/messages` accepts Anthropic API format
+- Model-based routing: extract `model` field from request body to determine target provider
+- Support only local models initially (qwen and gpt-oss)
+- Follow LiteLLM unified endpoint pattern similar to Claude Code
+
+**Request/Response Format Conversion**:
+- **Anthropic → OpenAI**: Convert incoming Anthropic `messages` format to OpenAI `chat/completions`
+- **OpenAI → Anthropic**: Convert outgoing OpenAI response to Anthropic `messages` response format
+- **Parameter Mapping**: 
+  - `max_tokens` (Anthropic) → `max_tokens` (OpenAI)
+  - `system` messages: Extract from Anthropic messages array and convert to OpenAI system message
+  - `stop_sequences` (Anthropic) → `stop` (OpenAI)
+  - `stream` parameter: Pass through unchanged
+
+**Model Routing Logic**:
+- **Qwen Models**: `qwen/*`, `*-thinking`, exact matches like `qwen/qwen3-next-80b-a3b-thinking`
+- **GPT-OSS Models**: `gpt-oss*`, `openai/gpt-oss*`, exact matches like `openai/gpt-oss-120b`
+- **Fallback**: Return model not found error in Anthropic format if no match
+
+**Think Tag Conversion to Anthropic Format**:
+- **Input**: Detect `<think>...</think>` tags in OpenAI response content
+- **Output**: Convert to Anthropic thinking format in response
+- **Streaming**: Handle think tag conversion for streaming responses
+- **Preservation**: Maintain all reasoning content but format according to Anthropic API spec
+
+**Error Handling**:
+- **All Errors**: Return in Anthropic error format, not OpenAI format
+- **Connection Failures**: Convert OpenAI backend errors to Anthropic error structure
+- **Model Not Found**: Return Anthropic-formatted error when model routing fails
+- **Format Conversion Errors**: Handle malformed requests/responses gracefully
+
+**Streaming Support**:
+- **Request**: Accept Anthropic streaming requests (`stream: true`)
+- **Response**: Convert OpenAI streaming format to Anthropic streaming format
+- **Think Tags**: Process think tag conversion in streaming chunks
+- **SSE Format**: Use Anthropic's Server-Sent Events format
+
 ### Error Handling Strategy
 
 **Connection Failures**:
 - 100ms timeout per endpoint attempt
 - Immediate failover to next endpoint in list
 - Failed endpoints immediately rejoin rotation (no blacklisting)
-- Return OpenAI-format error: "Sorry the backend server XXX is currently not available..."
+- Return OpenAI-format error for direct provider endpoints: "Sorry the backend server XXX is currently not available..."
+- Return Anthropic-format error for Claude Code proxy endpoints
 
 **Configuration Errors**:
 - Validate endpoint URLs include full paths (e.g., `/v1`)
