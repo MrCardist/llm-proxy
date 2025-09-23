@@ -30,6 +30,7 @@ type LocalLLMProvider struct {
 	thinkTagRegex     *regexp.Regexp
 	endThinkTagRegex  *regexp.Regexp
 	proxy             *httputil.ReverseProxy
+	providerManager   *ProviderManager // Add reference to provider manager for /local routing
 }
 
 // NewLocalLLMProvider creates a new local LLM provider
@@ -722,9 +723,21 @@ func (p *LocalLLMProvider) UserIDFromRequest(req *http.Request) string {
 	return ""
 }
 
+// SetProviderManager sets the provider manager for unified /local routing
+func (p *LocalLLMProvider) SetProviderManager(pm *ProviderManager) {
+	p.providerManager = pm
+}
+
 // RegisterExtraRoutes allows the provider to register additional routes
 func (p *LocalLLMProvider) RegisterExtraRoutes(router *mux.Router) {
-	// No extra routes needed for local LLM providers
+	// Register unified /local endpoints only for the qwen provider to avoid duplicates
+	if p.name == "qwen" {
+		// Register /local/v1/models endpoint for model discovery
+		router.HandleFunc("/local/v1/models", p.handleUnifiedModelsEndpoint).Methods("GET")
+		
+		// Register /local/v1/chat/completions endpoint for unified model access  
+		router.HandleFunc("/local/v1/chat/completions", p.handleUnifiedChatCompletions).Methods("POST")
+	}
 }
 
 // ValidateAPIKey validates API key (local LLMs may not need keys)
@@ -806,4 +819,116 @@ func (p *LocalLLMProvider) ParseResponseMetadata(responseBody io.Reader, isStrea
 	}
 
 	return metadata, nil
+}
+// handleUnifiedModelsEndpoint returns all available local models from configured providers
+func (p *LocalLLMProvider) handleUnifiedModelsEndpoint(w http.ResponseWriter, req *http.Request) {
+	models := make([]map[string]interface{}, 0)
+	
+	// Get models from qwen provider (this provider)
+	for modelName, modelConfig := range p.config.Models {
+		if modelConfig.Enabled {
+			model := map[string]interface{}{
+				"id":      modelName,
+				"object":  "model",
+				"created": 1640995200,
+				"owned_by": "local-qwen",
+			}
+			models = append(models, model)
+			
+			// Add aliases
+			for _, alias := range modelConfig.Aliases {
+				aliasModel := map[string]interface{}{
+					"id":      alias,
+					"object":  "model", 
+					"created": 1640995200,
+					"owned_by": "local-qwen",
+				}
+				models = append(models, aliasModel)
+			}
+		}
+	}
+	
+	// Add standard GPT-OSS models (these will be available if gpt-oss is configured)
+	gptOssModels := []string{"openai/gpt-oss-120b", "gpt-oss", "gpt-oss-120b"}
+	for _, modelName := range gptOssModels {
+		model := map[string]interface{}{
+			"id":      modelName,
+			"object":  "model",
+			"created": 1640995200,
+			"owned_by": "local-gpt-oss",
+		}
+		models = append(models, model)
+	}
+
+	response := map[string]interface{}{
+		"object": "list",
+		"data":   models,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleUnifiedChatCompletions routes requests to appropriate local provider based on model
+func (p *LocalLLMProvider) handleUnifiedChatCompletions(w http.ResponseWriter, req *http.Request) {
+	modelName := p.getModelNameFromRequest(req)
+	if modelName == "" {
+		http.Error(w, "Model name is required", http.StatusBadRequest)
+		return
+	}
+
+	modelLower := strings.ToLower(modelName)
+	
+	if strings.Contains(modelLower, "qwen") || strings.Contains(modelLower, "-thinking") {
+		// Route to qwen provider - modify the request path to match qwen provider's expected path
+		// Change /local/v1/chat/completions to /qwen/v1/chat/completions internally
+		originalPath := req.URL.Path
+		req.URL.Path = "/qwen/v1/chat/completions"
+		
+		// Call the qwen provider's Proxy handler directly
+		p.Proxy().ServeHTTP(w, req)
+		
+		// Restore original path (though request is done)
+		req.URL.Path = originalPath
+	} else if strings.Contains(modelLower, "gpt-oss") || strings.Contains(modelLower, "openai/gpt-oss") {
+		// Route to gpt-oss provider if available
+		if p.providerManager != nil {
+			gptOssProvider := p.providerManager.GetProvider("gpt-oss")
+			if gptOssProvider != nil {
+				// Change /local/v1/chat/completions to /gpt-oss/v1/chat/completions internally
+				originalPath := req.URL.Path
+				req.URL.Path = "/gpt-oss/v1/chat/completions"
+				
+				// Call the gpt-oss provider's Proxy handler directly
+				gptOssProvider.Proxy().ServeHTTP(w, req)
+				
+				// Restore original path (though request is done)
+				req.URL.Path = originalPath
+				return
+			}
+		}
+		
+		// If gpt-oss provider not available, provide helpful guidance
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		errorResponse := map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": "GPT-OSS provider not configured or not available. Please use /gpt-oss/v1/chat/completions directly if configured.",
+				"type":    "service_unavailable",
+				"code":    "provider_not_available",
+			},
+		}
+		json.NewEncoder(w).Encode(errorResponse)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		errorResponse := map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": fmt.Sprintf("Model not supported: %s. Available models at /local/v1/models", modelName),
+				"type":    "invalid_request_error",
+				"code":    "model_not_found",
+			},
+		}
+		json.NewEncoder(w).Encode(errorResponse)
+	}
 }
