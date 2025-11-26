@@ -29,6 +29,9 @@ Thumbs.db
 # Log files
 logs/
 
+# Testing artifacts
+testing/
+
 # Vibecoders
-CLAUDE.md 
+CLAUDE.md
 

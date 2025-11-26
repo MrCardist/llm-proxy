@@ -820,44 +820,30 @@ func (p *LocalLLMProvider) ParseResponseMetadata(responseBody io.Reader, isStrea
 
 	return metadata, nil
 }
-// handleUnifiedModelsEndpoint returns all available local models from configured providers
+// handleUnifiedModelsEndpoint returns local models from all configured local LLM providers
 func (p *LocalLLMProvider) handleUnifiedModelsEndpoint(w http.ResponseWriter, req *http.Request) {
 	models := make([]map[string]interface{}, 0)
 	
-	// Get models from qwen provider (this provider)
-	for modelName, modelConfig := range p.config.Models {
-		if modelConfig.Enabled {
-			model := map[string]interface{}{
-				"id":      modelName,
-				"object":  "model",
-				"created": 1640995200,
-				"owned_by": "local-qwen",
-			}
-			models = append(models, model)
-			
-			// Add aliases
-			for _, alias := range modelConfig.Aliases {
-				aliasModel := map[string]interface{}{
-					"id":      alias,
-					"object":  "model", 
-					"created": 1640995200,
-					"owned_by": "local-qwen",
+	if p.providerManager != nil {
+		// Get all providers and filter for local LLM providers
+		for providerName, provider := range p.providerManager.GetAllProviders() {
+			// Check if this is a local LLM provider
+			if localProvider, ok := provider.(*LocalLLMProvider); ok {
+				// Get each provider's default model only (no aliases, no variants)
+				if localProvider.config.DefaultModel != "" {
+					// Check if the default model is enabled
+					if modelConfig, exists := localProvider.config.Models[localProvider.config.DefaultModel]; exists && modelConfig.Enabled {
+						model := map[string]interface{}{
+							"id":       localProvider.config.DefaultModel,
+							"object":   "model",
+							"created":  1640995200,
+							"owned_by": fmt.Sprintf("local-%s", providerName),
+						}
+						models = append(models, model)
+					}
 				}
-				models = append(models, aliasModel)
 			}
 		}
-	}
-	
-	// Add standard GPT-OSS models (these will be available if gpt-oss is configured)
-	gptOssModels := []string{"openai/gpt-oss-120b", "gpt-oss", "gpt-oss-120b"}
-	for _, modelName := range gptOssModels {
-		model := map[string]interface{}{
-			"id":      modelName,
-			"object":  "model",
-			"created": 1640995200,
-			"owned_by": "local-gpt-oss",
-		}
-		models = append(models, model)
 	}
 
 	response := map[string]interface{}{

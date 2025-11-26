@@ -98,34 +98,47 @@ func (p *ClaudeCodeProxy) routeModelToProvider(modelName string) string {
 	if modelName == "" {
 		return ""
 	}
-	
+
 	modelLower := strings.ToLower(modelName)
-	
+
+	// Accept Bedrock/Anthropic model IDs - route to configured target_provider
+	// Examples: us.anthropic.claude-haiku-4-5-20251001-v1:0, claude-3-5-sonnet-20241022
+	if strings.Contains(modelLower, "anthropic") ||
+	   strings.Contains(modelLower, "claude") {
+		// Use configured target provider, default to qwen
+		if p.config != nil && p.config.TargetProvider != "" {
+			return p.config.TargetProvider
+		}
+		return "qwen"
+	}
+
 	// Check for qwen models: qwen/*, *-thinking, exact matches
-	if strings.Contains(modelLower, "qwen") || 
+	if strings.Contains(modelLower, "qwen") ||
 	   strings.HasSuffix(modelLower, "-thinking") ||
 	   modelLower == "qwen/qwen3-next-80b-a3b-thinking" {
 		return "qwen"
 	}
-	
-	// Check for gpt-oss models: gpt-oss*, openai/gpt-oss*, exact matches
-	if strings.Contains(modelLower, "gpt-oss") || 
-	   strings.HasPrefix(modelLower, "openai/gpt-oss") ||
-	   modelLower == "gpt-oss" ||
-	   modelLower == "openai/gpt-oss-120b" {
-		return "gpt-oss"
-	}
-	
+
+	// Note: gpt-oss is NOT supported for Claude Code proxy because it has a
+	// message format limitation ("Expected 2 output messages") that prevents
+	// it from handling Claude Code's multi-message conversations with tool use.
+
 	return ""
 }
 
 // convertClaudeCodeToOpenAI converts Claude Code request format to OpenAI format
 func (p *ClaudeCodeProxy) convertClaudeCodeToOpenAI(claudeReq *ClaudeCodeRequest) map[string]interface{} {
-	openaiReq := map[string]interface{}{
-		"model":      claudeReq.Model,
-		"stream":     claudeReq.Stream,
+	// Always use the configured target model for the backend
+	targetModel := "qwen/qwen3-next-80b-a3b-thinking"
+	if p.config != nil && p.config.TargetModel != "" {
+		targetModel = p.config.TargetModel
 	}
-	
+
+	openaiReq := map[string]interface{}{
+		"model":  targetModel,
+		"stream": claudeReq.Stream,
+	}
+
 	// Only add non-zero values to avoid parameter validation errors
 	if claudeReq.MaxTokens > 0 {
 		openaiReq["max_tokens"] = claudeReq.MaxTokens
@@ -136,14 +149,22 @@ func (p *ClaudeCodeProxy) convertClaudeCodeToOpenAI(claudeReq *ClaudeCodeRequest
 	if claudeReq.TopP > 0 {
 		openaiReq["top_p"] = claudeReq.TopP
 	}
-	
+
 	// Convert stop sequences
 	if len(claudeReq.StopSequences) > 0 {
 		openaiReq["stop"] = claudeReq.StopSequences
 	}
-	
+
+	// Convert Claude tools to OpenAI format
+	if claudeReq.Tools != nil {
+		openaiTools := p.convertToolsToOpenAI(claudeReq.Tools)
+		if len(openaiTools) > 0 {
+			openaiReq["tools"] = openaiTools
+		}
+	}
+
 	var messages []map[string]interface{}
-	
+
 	// Convert messages and handle system message
 	systemText := p.extractSystemText(claudeReq.System)
 	if systemText != "" {
@@ -153,18 +174,201 @@ func (p *ClaudeCodeProxy) convertClaudeCodeToOpenAI(claudeReq *ClaudeCodeRequest
 			"content": systemText,
 		})
 	}
-	
-	// Convert user/assistant messages
-	for _, msg := range claudeReq.Messages {
-		content := p.extractContentText(msg.Content)
-		messages = append(messages, map[string]interface{}{
-			"role":    msg.Role,
-			"content": content,
-		})
-	}
-	
+
+	// Convert user/assistant messages with proper handling of tool_use and tool_result
+	messages = append(messages, p.convertMessagesToOpenAI(claudeReq.Messages)...)
+
 	openaiReq["messages"] = messages
 	return openaiReq
+}
+
+// convertToolsToOpenAI converts Claude tool definitions to OpenAI format
+func (p *ClaudeCodeProxy) convertToolsToOpenAI(tools interface{}) []map[string]interface{} {
+	var openaiTools []map[string]interface{}
+
+	toolsArray, ok := tools.([]interface{})
+	if !ok {
+		return openaiTools
+	}
+
+	for _, tool := range toolsArray {
+		toolMap, ok := tool.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Claude format: {name, description, input_schema}
+		// OpenAI format: {type: "function", function: {name, description, parameters}}
+		name, _ := toolMap["name"].(string)
+		description, _ := toolMap["description"].(string)
+		inputSchema := toolMap["input_schema"]
+
+		if name != "" {
+			openaiTool := map[string]interface{}{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":        name,
+					"description": description,
+					"parameters":  inputSchema,
+				},
+			}
+			openaiTools = append(openaiTools, openaiTool)
+		}
+	}
+
+	return openaiTools
+}
+
+// convertMessagesToOpenAI converts Claude messages to OpenAI format, handling tool_use and tool_result
+func (p *ClaudeCodeProxy) convertMessagesToOpenAI(messages []ClaudeCodeMessage) []map[string]interface{} {
+	var openaiMessages []map[string]interface{}
+
+	for _, msg := range messages {
+		converted := p.convertSingleMessageToOpenAI(msg)
+		openaiMessages = append(openaiMessages, converted...)
+	}
+
+	return openaiMessages
+}
+
+// convertSingleMessageToOpenAI converts a single Claude message to OpenAI format
+func (p *ClaudeCodeProxy) convertSingleMessageToOpenAI(msg ClaudeCodeMessage) []map[string]interface{} {
+	var result []map[string]interface{}
+
+	// Handle string content directly
+	if contentStr, ok := msg.Content.(string); ok {
+		result = append(result, map[string]interface{}{
+			"role":    msg.Role,
+			"content": contentStr,
+		})
+		return result
+	}
+
+	// Handle array of content blocks
+	contentArray, ok := msg.Content.([]interface{})
+	if !ok {
+		// Fallback: try to extract text
+		result = append(result, map[string]interface{}{
+			"role":    msg.Role,
+			"content": p.extractContentText(msg.Content),
+		})
+		return result
+	}
+
+	// Process content blocks
+	var textParts []string
+	var toolCalls []map[string]interface{}
+	var toolResults []map[string]interface{}
+
+	for _, block := range contentArray {
+		blockMap, ok := block.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		blockType, _ := blockMap["type"].(string)
+
+		switch blockType {
+		case "text":
+			if text, ok := blockMap["text"].(string); ok {
+				textParts = append(textParts, text)
+			}
+
+		case "tool_use":
+			// Claude tool_use -> OpenAI tool_calls
+			toolID, _ := blockMap["id"].(string)
+			toolName, _ := blockMap["name"].(string)
+			toolInput := blockMap["input"]
+
+			// Convert input to JSON string for OpenAI
+			inputJSON, _ := json.Marshal(toolInput)
+
+			toolCalls = append(toolCalls, map[string]interface{}{
+				"id":   toolID,
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      toolName,
+					"arguments": string(inputJSON),
+				},
+			})
+
+		case "tool_result":
+			// Claude tool_result -> separate OpenAI tool message
+			toolUseID, _ := blockMap["tool_use_id"].(string)
+			content := p.extractToolResultContent(blockMap["content"])
+
+			toolResults = append(toolResults, map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": toolUseID,
+				"content":      content,
+			})
+		}
+	}
+
+	// Build the message(s)
+	if msg.Role == "assistant" {
+		// Assistant message with potential tool_calls
+		assistantMsg := map[string]interface{}{
+			"role": "assistant",
+		}
+
+		if len(textParts) > 0 {
+			assistantMsg["content"] = strings.Join(textParts, "")
+		}
+
+		if len(toolCalls) > 0 {
+			assistantMsg["tool_calls"] = toolCalls
+			// OpenAI requires content to be null or omitted when tool_calls present
+			if len(textParts) == 0 {
+				assistantMsg["content"] = nil
+			}
+		}
+
+		result = append(result, assistantMsg)
+
+	} else if msg.Role == "user" {
+		// User message - could have text content and/or tool_results
+		if len(textParts) > 0 {
+			result = append(result, map[string]interface{}{
+				"role":    "user",
+				"content": strings.Join(textParts, ""),
+			})
+		}
+
+		// Tool results become separate messages with role "tool"
+		result = append(result, toolResults...)
+	}
+
+	return result
+}
+
+// extractToolResultContent extracts content from a tool_result block
+func (p *ClaudeCodeProxy) extractToolResultContent(content interface{}) string {
+	if content == nil {
+		return ""
+	}
+
+	// String content
+	if str, ok := content.(string); ok {
+		return str
+	}
+
+	// Array of content blocks
+	if arr, ok := content.([]interface{}); ok {
+		var parts []string
+		for _, item := range arr {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				if itemMap["type"] == "text" {
+					if text, ok := itemMap["text"].(string); ok {
+						parts = append(parts, text)
+					}
+				}
+			}
+		}
+		return strings.Join(parts, "")
+	}
+
+	return fmt.Sprintf("%v", content)
 }
 
 // extractContentText extracts text from Anthropic content (string or array format)
@@ -215,75 +419,182 @@ func (p *ClaudeCodeProxy) extractSystemText(system interface{}) string {
 	}
 }
 
-// convertOpenAIToAnthropic converts OpenAI response format to Anthropic format
-func (p *ClaudeCodeProxy) convertOpenAIToAnthropic(openaiResp map[string]interface{}) *AnthropicResponse {
-	anthropicResp := &AnthropicResponse{
-		Type: "message",
-		Role: "assistant",
+// ClaudeContentBlock represents a flexible content block for Claude responses
+type ClaudeContentBlock struct {
+	Type     string                 `json:"type"`
+	Text     string                 `json:"text,omitempty"`
+	Thinking string                 `json:"thinking,omitempty"`
+	ID       string                 `json:"id,omitempty"`
+	Name     string                 `json:"name,omitempty"`
+	Input    map[string]interface{} `json:"input,omitempty"`
+}
+
+// ClaudeResponse represents a full Claude API response with flexible content
+type ClaudeResponse struct {
+	ID           string               `json:"id"`
+	Type         string               `json:"type"`
+	Role         string               `json:"role"`
+	Content      []ClaudeContentBlock `json:"content"`
+	Model        string               `json:"model"`
+	StopReason   string               `json:"stop_reason"`
+	StopSequence *string              `json:"stop_sequence"`
+	Usage        struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+}
+
+// convertOpenAIToAnthropic converts OpenAI response format to Anthropic/Claude format
+func (p *ClaudeCodeProxy) convertOpenAIToAnthropic(openaiResp map[string]interface{}) *ClaudeResponse {
+	claudeResp := &ClaudeResponse{
+		Type:    "message",
+		Role:    "assistant",
+		Content: []ClaudeContentBlock{}, // Initialize to empty array, not nil
 	}
-	
+
 	// Extract basic fields
 	if id, ok := openaiResp["id"].(string); ok {
-		anthropicResp.ID = id
+		claudeResp.ID = id
 	}
 	if model, ok := openaiResp["model"].(string); ok {
-		anthropicResp.Model = model
+		claudeResp.Model = model
 	}
-	
+
 	// Extract content from choices
 	if choices, ok := openaiResp["choices"].([]interface{}); ok && len(choices) > 0 {
 		if choice, ok := choices[0].(map[string]interface{}); ok {
 			if message, ok := choice["message"].(map[string]interface{}); ok {
-				if content, ok := message["content"].(string); ok {
-					// Process think tags to Anthropic thinking format
-					processedContent := p.convertThinkTagsToAnthropic(content)
-					anthropicResp.Content = []AnthropicContent{
-						{
-							Type: "text",
-							Text: processedContent,
-						},
+				// Process text content with think tags
+				if content, ok := message["content"].(string); ok && content != "" {
+					contentBlocks := p.parseThinkTagsToBlocks(content)
+					claudeResp.Content = append(claudeResp.Content, contentBlocks...)
+				}
+
+				// Process tool_calls -> tool_use blocks
+				if toolCalls, ok := message["tool_calls"].([]interface{}); ok {
+					for _, tc := range toolCalls {
+						if toolCall, ok := tc.(map[string]interface{}); ok {
+							toolUseBlock := p.convertToolCallToToolUse(toolCall)
+							if toolUseBlock != nil {
+								claudeResp.Content = append(claudeResp.Content, *toolUseBlock)
+							}
+						}
 					}
 				}
 			}
-			
+
 			// Extract stop reason
 			if finishReason, ok := choice["finish_reason"].(string); ok {
 				switch finishReason {
 				case "stop":
-					anthropicResp.StopReason = "end_turn"
+					claudeResp.StopReason = "end_turn"
 				case "length":
-					anthropicResp.StopReason = "max_tokens"
+					claudeResp.StopReason = "max_tokens"
+				case "tool_calls":
+					claudeResp.StopReason = "tool_use"
 				case "content_filter":
-					anthropicResp.StopReason = "stop_sequence"
+					claudeResp.StopReason = "stop_sequence"
 				default:
-					anthropicResp.StopReason = "end_turn"
+					claudeResp.StopReason = "end_turn"
 				}
 			}
 		}
 	}
-	
+
 	// Extract usage
 	if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
 		if inputTokens, ok := usage["prompt_tokens"].(float64); ok {
-			anthropicResp.Usage.InputTokens = int(inputTokens)
+			claudeResp.Usage.InputTokens = int(inputTokens)
 		}
 		if outputTokens, ok := usage["completion_tokens"].(float64); ok {
-			anthropicResp.Usage.OutputTokens = int(outputTokens)
+			claudeResp.Usage.OutputTokens = int(outputTokens)
 		}
 	}
-	
-	return anthropicResp
+
+	return claudeResp
 }
 
-// convertThinkTagsToAnthropic converts <think> tags to Anthropic thinking format
-func (p *ClaudeCodeProxy) convertThinkTagsToAnthropic(content string) string {
-	// For now, preserve ALL content including thinking tags
-	// This ensures complete responses are returned to the user
-	// Future enhancement: could format think tags specially if needed
-	
-	// Simply return the full content as-is
-	// The thinking tags provide valuable context and reasoning
-	return content
+// parseThinkTagsToBlocks parses content with <think> tags into separate content blocks
+func (p *ClaudeCodeProxy) parseThinkTagsToBlocks(content string) []ClaudeContentBlock {
+	var blocks []ClaudeContentBlock
+
+	// Look for <think>...</think> pattern
+	thinkStartIdx := strings.Index(content, "<think>")
+	thinkEndIdx := strings.Index(content, "</think>")
+
+	if thinkStartIdx != -1 && thinkEndIdx != -1 && thinkEndIdx > thinkStartIdx {
+		// Extract thinking content
+		thinkingContent := content[thinkStartIdx+7 : thinkEndIdx]
+		thinkingContent = strings.TrimSpace(thinkingContent)
+
+		if thinkingContent != "" {
+			blocks = append(blocks, ClaudeContentBlock{
+				Type:     "thinking",
+				Thinking: thinkingContent,
+			})
+		}
+
+		// Get the text after </think>
+		remainingText := strings.TrimSpace(content[thinkEndIdx+8:])
+		if remainingText != "" {
+			blocks = append(blocks, ClaudeContentBlock{
+				Type: "text",
+				Text: remainingText,
+			})
+		}
+	} else if thinkEndIdx != -1 && thinkStartIdx == -1 {
+		// Has </think> but no <think> - Qwen quirk, treat everything before as thinking
+		thinkingContent := strings.TrimSpace(content[:thinkEndIdx])
+		remainingText := strings.TrimSpace(content[thinkEndIdx+8:])
+
+		if thinkingContent != "" {
+			blocks = append(blocks, ClaudeContentBlock{
+				Type:     "thinking",
+				Thinking: thinkingContent,
+			})
+		}
+		if remainingText != "" {
+			blocks = append(blocks, ClaudeContentBlock{
+				Type: "text",
+				Text: remainingText,
+			})
+		}
+	} else {
+		// No think tags, just text
+		if content != "" {
+			blocks = append(blocks, ClaudeContentBlock{
+				Type: "text",
+				Text: content,
+			})
+		}
+	}
+
+	return blocks
+}
+
+// convertToolCallToToolUse converts an OpenAI tool_call to a Claude tool_use block
+func (p *ClaudeCodeProxy) convertToolCallToToolUse(toolCall map[string]interface{}) *ClaudeContentBlock {
+	id, _ := toolCall["id"].(string)
+	function, ok := toolCall["function"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	name, _ := function["name"].(string)
+	argumentsStr, _ := function["arguments"].(string)
+
+	// Parse arguments JSON string to map
+	var input map[string]interface{}
+	if err := json.Unmarshal([]byte(argumentsStr), &input); err != nil {
+		input = map[string]interface{}{}
+	}
+
+	return &ClaudeContentBlock{
+		Type:  "tool_use",
+		ID:    id,
+		Name:  name,
+		Input: input,
+	}
 }
 
 // createAnthropicError creates an error in Anthropic format
@@ -303,6 +614,12 @@ func (p *ClaudeCodeProxy) createAnthropicError(errorType, message string, status
 // Proxy returns the HTTP handler for this provider
 func (p *ClaudeCodeProxy) Proxy() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Check for count_tokens endpoint first (handles /cc-local/v1/messages/count_tokens)
+		if strings.HasSuffix(req.URL.Path, "/count_tokens") {
+			p.handleCountTokens(w, req)
+			return
+		}
+
 		// Parse the Anthropic request
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
@@ -326,7 +643,7 @@ func (p *ClaudeCodeProxy) Proxy() http.Handler {
 		targetProviderName := p.routeModelToProvider(claudeReq.Model)
 		if targetProviderName == "" {
 			errorBytes, statusCode := p.createAnthropicError("invalid_request_error", 
-				fmt.Sprintf("Model '%s' is not supported. Supported models: qwen/*, *-thinking, gpt-oss*, openai/gpt-oss*", claudeReq.Model), 
+				fmt.Sprintf("Model '%s' is not supported. Supported models: qwen/*, *-thinking, claude-*, anthropic.*", claudeReq.Model), 
 				http.StatusBadRequest)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(statusCode)
@@ -433,9 +750,43 @@ func (p *ClaudeCodeProxy) handleNonStreamingRequest(w http.ResponseWriter, req *
 		return
 	}
 	
+	// Check for invalid/empty responses (missing choices array indicates a problem)
+	if _, hasChoices := openaiResp["choices"]; !hasChoices {
+		errorMsg := "Backend returned invalid or empty response"
+		// Try to extract error message from various formats
+		if errObj, ok := openaiResp["error"].(map[string]interface{}); ok {
+			if msg, ok := errObj["message"].(string); ok {
+				errorMsg = msg
+			}
+		} else if msg, ok := openaiResp["message"].(string); ok {
+			errorMsg = msg
+		} else if detail, ok := openaiResp["detail"].(string); ok {
+			errorMsg = detail
+		}
+		// Include raw response in error for debugging if it's small
+		rawBytes := recorder.body.Bytes()
+		if len(rawBytes) < 500 && len(rawBytes) > 0 {
+			errorMsg = fmt.Sprintf("%s (raw: %s)", errorMsg, string(rawBytes))
+		}
+		errorBytes, statusCode := p.createAnthropicError("service_unavailable", errorMsg, http.StatusBadGateway)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		w.Write(errorBytes)
+		return
+	}
+
 	// Convert OpenAI response to Anthropic format
 	anthropicResp := p.convertOpenAIToAnthropic(openaiResp)
-	
+
+	// Validate the converted response has content
+	if len(anthropicResp.Content) == 0 && anthropicResp.StopReason == "" {
+		errorBytes, statusCode := p.createAnthropicError("service_unavailable", "Backend returned empty response", http.StatusBadGateway)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		w.Write(errorBytes)
+		return
+	}
+
 	// Return Anthropic response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(recorder.statusCode)
@@ -601,30 +952,30 @@ func (p *ClaudeCodeProxy) GetHealthStatus() map[string]interface{} {
 	status := map[string]interface{}{
 		"status": "healthy",
 		"supported_models": []string{
-			"qwen/*", "*-thinking", "gpt-oss*", "openai/gpt-oss*",
+			"qwen/*", "*-thinking", "claude-*", "anthropic.*",
 		},
 		"endpoint":           "/cc-local/v1/messages",
-		"supported_providers": []string{"qwen", "gpt-oss"},
+		"supported_providers": []string{"qwen"},
+		"note": "gpt-oss not supported due to message format limitations",
 	}
-	
+
 	// Check provider manager availability
 	if p.providerManager != nil {
 		providersStatus := make(map[string]interface{})
-		for _, providerName := range []string{"qwen", "gpt-oss"} {
-			provider := p.providerManager.GetProvider(providerName)
-			if provider != nil {
-				providersStatus[providerName] = provider.GetHealthStatus()
-			} else {
-				providersStatus[providerName] = "unavailable"
-				status["status"] = "degraded"
-			}
+		// Only check qwen - gpt-oss is not supported for Claude Code proxy
+		provider := p.providerManager.GetProvider("qwen")
+		if provider != nil {
+			providersStatus["qwen"] = provider.GetHealthStatus()
+		} else {
+			providersStatus["qwen"] = "unavailable"
+			status["status"] = "degraded"
 		}
 		status["providers_health"] = providersStatus
 	} else {
 		status["status"] = "unhealthy"
 		status["error"] = "Provider manager not available"
 	}
-	
+
 	return status
 }
 
@@ -635,8 +986,50 @@ func (p *ClaudeCodeProxy) UserIDFromRequest(req *http.Request) string {
 
 // RegisterExtraRoutes allows the provider to register additional routes
 func (p *ClaudeCodeProxy) RegisterExtraRoutes(router *mux.Router) {
+	// Register count_tokens endpoint FIRST (more specific route must come before general route)
+	router.HandleFunc("/cc-local/v1/messages/count_tokens", p.handleCountTokens).Methods("POST")
 	// Register the unified Claude Code endpoint
 	router.HandleFunc("/cc-local/v1/messages", p.Proxy().ServeHTTP).Methods("POST")
+}
+
+// handleCountTokens handles the token counting endpoint
+// Local LLMs typically don't have native token counting, so we estimate based on character count
+func (p *ClaudeCodeProxy) handleCountTokens(w http.ResponseWriter, req *http.Request) {
+	bodyBytes, err := io.ReadAll(req.Body)
+	if err != nil {
+		errorBytes, statusCode := p.createAnthropicError("invalid_request_error", "Failed to read request body", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		w.Write(errorBytes)
+		return
+	}
+
+	var claudeReq ClaudeCodeRequest
+	if err := json.Unmarshal(bodyBytes, &claudeReq); err != nil {
+		errorBytes, statusCode := p.createAnthropicError("invalid_request_error", "Invalid JSON in request body", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		w.Write(errorBytes)
+		return
+	}
+
+	// Estimate tokens based on character count (rough approximation: ~4 chars per token)
+	totalChars := 0
+	for _, msg := range claudeReq.Messages {
+		totalChars += len(p.extractContentText(msg.Content))
+	}
+	systemText := p.extractSystemText(claudeReq.System)
+	totalChars += len(systemText)
+
+	estimatedTokens := (totalChars + 3) / 4 // Round up
+
+	response := map[string]interface{}{
+		"input_tokens": estimatedTokens,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 // ValidateAPIKey validates API key (Claude Code proxy may not need keys)

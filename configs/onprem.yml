@@ -16,24 +16,44 @@ features:
 # Enable local LLM providers for development
 local_llms:
   gpt-oss:
-    enabled: true  # Enable for development testing
+    enabled: true
+    default_model: "openai/gpt-oss-120b"
+    thinking_tag_fix: true
+    request_timeout: 120
+    max_retries: 2
+    models:
+      "openai/gpt-oss-120b":
+        enabled: true
+        endpoints:
+          - url: "http://dgx01.arcs.oregonstate.edu:8000/v1"
+            api_key: ""
+        pricing:
+          input: 0.1
+          output: 0.4
   qwen:
     enabled: true  # Enable for development testing
+    default_model: "qwen/qwen3-next-80b-a3b-thinking"
+    thinking_tag_fix: true
+    request_timeout: 120
+    max_retries: 2
+    models:
+      "qwen/qwen3-next-80b-a3b-thinking":
+        enabled: true
+        endpoints:
+          - url: "http://dgx01.arcs.oregonstate.edu:8005/v1"
+            api_key: ""
+        pricing:
+          input: 0.0
+          output: 0.0
 
 # Enable Claude Code proxy for development
 claude_code_proxy:
-  enabled: true  # Enable for development testing
-  unified_endpoint: "/cc-local/v1/messages"  # Single endpoint for all local models
-  supported_providers: ["qwen", "gpt-oss"]   # Only local models supported initially
-  model_routing:
-    # Route based on model name in request body to appropriate provider
-    qwen_models: ["qwen/qwen3-next-80b-a3b-thinking", "qwen/*", "*-thinking"]
-    gpt_oss_models: ["openai/gpt-oss-120b", "gpt-oss", "gpt-oss-*", "openai/gpt-oss-*"]
+  enabled: true
+  target_provider: "qwen"
+  target_model: "qwen/qwen3-next-80b-a3b-thinking"
+  unified_endpoint: "/cc-local/v1/messages"
+  supported_providers: ["qwen", "gpt-oss"]
   parameter_mapping:
-    max_tokens: "max_tokens"  # Anthropic max_tokens -> OpenAI max_tokens
-    system: "system_message"  # Handle Anthropic system messages
-  think_tag_conversion:
-    enabled: true
-    convert_to_anthropic_format: true  # Convert <think> tags to Anthropic thinking format
+    max_tokens: "max_tokens"
 
 
