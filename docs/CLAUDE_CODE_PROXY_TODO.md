@@ -29,64 +29,70 @@ Accept these Bedrock model IDs (all route to same Qwen backend):
 
 ## Implementation Tasks
 
-### Phase 1: Core Fixes (Required for Claude Code)
+### Phase 1: Core Fixes (Required for Claude Code) ✅ COMPLETE
 
-- [ ] **System prompt handling**
+- [x] **System prompt handling**
   - Convert Anthropic `system` parameter to OpenAI system message
   - Insert as first message with `role: "system"`
 
-- [ ] **Tool definitions (request)**
+- [x] **Tool definitions (request)**
   - Convert Claude tool format to OpenAI function format
   - Claude: `{name, description, input_schema}` → OpenAI: `{type: "function", function: {name, description, parameters}}`
 
-- [ ] **Tool use in responses**
+- [x] **Tool use in responses**
   - Convert OpenAI `tool_calls` to Claude `tool_use` content blocks
   - Map `function.arguments` (JSON string) → `input` (object)
   - Generate appropriate tool_use IDs
 
-- [ ] **Tool results in requests**
+- [x] **Tool results in requests**
   - Convert Claude `tool_result` content blocks to OpenAI tool messages
   - Claude: `{role: "user", content: [{type: "tool_result", tool_use_id, content}]}`
   - OpenAI: `{role: "tool", tool_call_id, content}`
 
-- [ ] **Thinking content blocks**
+- [x] **Thinking content blocks**
   - Parse `<think>...</think>` from Qwen response
   - Convert to Claude thinking content block: `{type: "thinking", thinking: "..."}`
   - Place before text content in response
 
-### Phase 2: Model & Header Handling
+### Phase 2: Model & Header Handling ✅ COMPLETE
 
-- [ ] **Accept Bedrock model IDs**
+- [x] **Accept Bedrock model IDs**
   - Parse incoming model names (Bedrock format)
   - Always use configured target model for backend
   - Return appropriate model name in response
 
-- [ ] **Anthropic headers**
-  - Handle `anthropic-version` header
-  - Convert `x-api-key` if present
+- [x] **Anthropic headers**
+  - Handle `anthropic-version` header (accepted, passed through)
+  - `x-api-key` not required for local LLM endpoint
 
-### Phase 3: Content Block Handling
+### Phase 3: Content Block Handling ✅ COMPLETE
 
-- [ ] **Mixed content blocks in requests**
+- [x] **Mixed content blocks in requests**
   - Handle messages with multiple content block types
-  - Strip `image` blocks (not supported)
-  - Strip `cache_control` fields
+  - Strip `image` blocks (silently ignored, not supported)
+  - Strip `cache_control` fields (not included in OpenAI request)
 
-- [ ] **Multiple content blocks in responses**
+- [x] **Multiple content blocks in responses**
   - Support returning both `thinking` and `text` blocks
   - Support returning both `text` and `tool_use` blocks
 
-### Phase 4: Streaming (Deferred)
+### Phase 4: Streaming ✅ COMPLETE
 
-- [ ] **True streaming** (later)
-  - Pipe chunks through without buffering
-  - Convert OpenAI SSE to Claude SSE in real-time
+- [x] **Buffered streaming**
+  - Converts OpenAI SSE to Claude SSE format
 
-### Phase 5: Standard Model IDs (Deferred)
+- [x] **True streaming with think block separation**
+  - Detects `<think>` tag at stream start and emits `content_block_start` with type "thinking"
+  - Streams thinking content via `thinking_delta` events in real-time
+  - Detects `</think>` tag and transitions to text block with `text_delta` events
+  - Properly closes content blocks with `content_block_stop` events
 
-- [ ] **Accept standard Anthropic model IDs**
-  - `claude-3-5-sonnet-20241022`, etc.
-  - Map to same backend
+### Phase 5: Standard Model IDs ✅ COMPLETE
+
+- [x] **Accept standard Anthropic model IDs**
+  - `claude-*`, `anthropic.*` patterns accepted
+  - Also accepts `qwen/*` and `*-thinking` models
+  - All route to configured target model
 
 ## Format Reference
 

@@ -794,71 +794,131 @@ func (p *ClaudeCodeProxy) handleNonStreamingRequest(w http.ResponseWriter, req *
 }
 
 // handleStreamingRequest handles streaming requests and converts SSE format
+// It properly separates <think> tags into thinking content blocks
 func (p *ClaudeCodeProxy) handleStreamingRequest(w http.ResponseWriter, req *http.Request, targetProvider Provider) {
 	// Set up SSE headers for Anthropic format
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	
+
 	// Create a pipe to capture streaming response
 	pr, pw := io.Pipe()
 	defer pr.Close()
-	
+
 	// Create a custom response writer that writes to our pipe
 	streamRecorder := &streamResponseRecorder{
 		ResponseWriter: w,
 		pipe:          pw,
 		headers:       make(http.Header),
 	}
-	
+
 	// Send initial Anthropic streaming events
+	msgID := "msg_" + generateID()
 	p.writeAnthropicStreamEvent(w, "message_start", map[string]interface{}{
 		"type": "message_start",
 		"message": map[string]interface{}{
-			"id":      "msg_" + generateID(),
+			"id":      msgID,
 			"type":    "message",
 			"role":    "assistant",
 			"content": []interface{}{},
 			"model":   req.Header.Get("model"),
 		},
 	})
-	
-	p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
-		"type":  "content_block_start",
-		"index": 0,
-		"content_block": map[string]interface{}{
-			"type": "text",
-			"text": "",
-		},
-	})
-	
+
 	// Start the target provider request in a goroutine
 	go func() {
 		defer pw.Close()
 		targetProvider.Proxy().ServeHTTP(streamRecorder, req)
 	}()
-	
+
+	// State for tracking thinking vs text content
+	var contentBuffer strings.Builder
+	inThinkingBlock := false
+	thinkingBlockStarted := false
+	textBlockStarted := false
+	currentBlockIndex := 0
+
+	flushContent := func() {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+
 	// Process streaming response from target provider
 	scanner := bufio.NewScanner(pr)
 	for scanner.Scan() {
 		line := scanner.Text()
-		
+
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
-			
+
 			if data == "[DONE]" {
-				// Send final events
-				p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
-					"type":  "content_block_stop",
-					"index": 0,
+				// Check if we have buffered content to flush
+				buffered := contentBuffer.String()
+				if buffered != "" {
+					// Handle any remaining buffered content
+					if inThinkingBlock {
+						// Still in thinking mode but stream ended - send as thinking
+						if !thinkingBlockStarted {
+							p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+								"type":  "content_block_start",
+								"index": currentBlockIndex,
+								"content_block": map[string]interface{}{
+									"type":     "thinking",
+									"thinking": "",
+								},
+							})
+							thinkingBlockStarted = true
+						}
+						p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+							"type":  "content_block_delta",
+							"index": currentBlockIndex,
+							"delta": map[string]interface{}{
+								"type":     "thinking_delta",
+								"thinking": buffered,
+							},
+						})
+					} else if textBlockStarted {
+						// Send remaining text
+						p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+							"type":  "content_block_delta",
+							"index": currentBlockIndex,
+							"delta": map[string]interface{}{
+								"type": "text_delta",
+								"text": buffered,
+							},
+						})
+					}
+				}
+
+				// Close any open blocks
+				if thinkingBlockStarted || textBlockStarted {
+					p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+						"type":  "content_block_stop",
+						"index": currentBlockIndex,
+					})
+				}
+
+				// Send message_delta with stop_reason and usage
+				p.writeAnthropicStreamEvent(w, "message_delta", map[string]interface{}{
+					"type": "message_delta",
+					"delta": map[string]interface{}{
+						"stop_reason":   "end_turn",
+						"stop_sequence": nil,
+					},
+					"usage": map[string]interface{}{
+						"output_tokens": 0, // We don't have accurate count in streaming
+					},
 				})
+
 				p.writeAnthropicStreamEvent(w, "message_stop", map[string]interface{}{
 					"type": "message_stop",
 				})
+				flushContent()
 				break
 			}
-			
+
 			// Parse OpenAI streaming chunk
 			var openaiChunk map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &openaiChunk); err == nil {
@@ -866,27 +926,202 @@ func (p *ClaudeCodeProxy) handleStreamingRequest(w http.ResponseWriter, req *htt
 					if choice, ok := choices[0].(map[string]interface{}); ok {
 						if delta, ok := choice["delta"].(map[string]interface{}); ok {
 							if content, ok := delta["content"].(string); ok && content != "" {
-								// Stream ALL content including think tags
-								// This ensures complete responses are returned
-								anthropicEvent := map[string]interface{}{
-									"type":  "content_block_delta",
-									"index": 0,
-									"delta": map[string]interface{}{
-										"type": "text_delta",
-										"text": content,
-									},
+								// Add content to buffer
+								contentBuffer.WriteString(content)
+								fullContent := contentBuffer.String()
+
+								// Check for <think> tag at start
+								if !thinkingBlockStarted && !textBlockStarted {
+									if strings.HasPrefix(fullContent, "<think>") {
+										// Start thinking block
+										inThinkingBlock = true
+										thinkingBlockStarted = true
+										p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+											"type":  "content_block_start",
+											"index": currentBlockIndex,
+											"content_block": map[string]interface{}{
+												"type":     "thinking",
+												"thinking": "",
+											},
+										})
+										// Remove <think> from buffer and stream what's after
+										contentBuffer.Reset()
+										afterTag := strings.TrimPrefix(fullContent, "<think>")
+										if afterTag != "" {
+											// Check if </think> is also in this chunk
+											if idx := strings.Index(afterTag, "</think>"); idx != -1 {
+												// Complete thinking in one chunk
+												thinkingContent := afterTag[:idx]
+												if thinkingContent != "" {
+													p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+														"type":  "content_block_delta",
+														"index": currentBlockIndex,
+														"delta": map[string]interface{}{
+															"type":     "thinking_delta",
+															"thinking": thinkingContent,
+														},
+													})
+												}
+												// Close thinking block
+												p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+													"type":  "content_block_stop",
+													"index": currentBlockIndex,
+												})
+												inThinkingBlock = false
+												currentBlockIndex++
+
+												// Start text block with remaining content
+												textContent := strings.TrimSpace(afterTag[idx+8:])
+												if textContent != "" {
+													textBlockStarted = true
+													p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+														"type":  "content_block_start",
+														"index": currentBlockIndex,
+														"content_block": map[string]interface{}{
+															"type": "text",
+															"text": "",
+														},
+													})
+													p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+														"type":  "content_block_delta",
+														"index": currentBlockIndex,
+														"delta": map[string]interface{}{
+															"type": "text_delta",
+															"text": textContent,
+														},
+													})
+												}
+												contentBuffer.Reset()
+											} else {
+												// Stream thinking content
+												p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+													"type":  "content_block_delta",
+													"index": currentBlockIndex,
+													"delta": map[string]interface{}{
+														"type":     "thinking_delta",
+														"thinking": afterTag,
+													},
+												})
+												contentBuffer.Reset()
+											}
+										}
+										flushContent()
+										continue
+									} else if len(fullContent) < 7 {
+										// Not enough content to determine if it starts with <think>
+										// Keep buffering
+										continue
+									} else {
+										// Doesn't start with <think>, start text block
+										textBlockStarted = true
+										p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+											"type":  "content_block_start",
+											"index": currentBlockIndex,
+											"content_block": map[string]interface{}{
+												"type": "text",
+												"text": "",
+											},
+										})
+										// Send buffered content
+										p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+											"type":  "content_block_delta",
+											"index": currentBlockIndex,
+											"delta": map[string]interface{}{
+												"type": "text_delta",
+												"text": fullContent,
+											},
+										})
+										contentBuffer.Reset()
+										flushContent()
+										continue
+									}
 								}
-								p.writeAnthropicStreamEvent(w, "content_block_delta", anthropicEvent)
+
+								// Already in a block - check for </think> transition
+								if inThinkingBlock {
+									if idx := strings.Index(fullContent, "</think>"); idx != -1 {
+										// Found end of thinking
+										thinkingContent := fullContent[:idx]
+										if thinkingContent != "" {
+											p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+												"type":  "content_block_delta",
+												"index": currentBlockIndex,
+												"delta": map[string]interface{}{
+													"type":     "thinking_delta",
+													"thinking": thinkingContent,
+												},
+											})
+										}
+										// Close thinking block
+										p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+											"type":  "content_block_stop",
+											"index": currentBlockIndex,
+										})
+										inThinkingBlock = false
+										currentBlockIndex++
+
+										// Start text block
+										textContent := strings.TrimSpace(fullContent[idx+8:])
+										if textContent != "" {
+											textBlockStarted = true
+											p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+												"type":  "content_block_start",
+												"index": currentBlockIndex,
+												"content_block": map[string]interface{}{
+													"type": "text",
+													"text": "",
+												},
+											})
+											p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+												"type":  "content_block_delta",
+												"index": currentBlockIndex,
+												"delta": map[string]interface{}{
+													"type": "text_delta",
+													"text": textContent,
+												},
+											})
+										}
+										contentBuffer.Reset()
+										flushContent()
+										continue
+									}
+									// Still in thinking, stream it
+									p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+										"type":  "content_block_delta",
+										"index": currentBlockIndex,
+										"delta": map[string]interface{}{
+											"type":     "thinking_delta",
+											"thinking": content,
+										},
+									})
+									contentBuffer.Reset()
+									// Keep last 8 chars for </think> detection across chunk boundaries
+									if len(fullContent) >= 8 {
+										contentBuffer.WriteString(fullContent[len(fullContent)-8:])
+									} else {
+										contentBuffer.WriteString(fullContent)
+									}
+									if contentBuffer.Len() > 8 {
+										contentBuffer.Reset()
+									}
+								} else if textBlockStarted {
+									// In text block, just stream
+									p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+										"type":  "content_block_delta",
+										"index": currentBlockIndex,
+										"delta": map[string]interface{}{
+											"type": "text_delta",
+											"text": content,
+										},
+									})
+									contentBuffer.Reset()
+								}
+								flushContent()
 							}
 						}
 					}
 				}
 			}
-		}
-		
-		// Flush immediately for streaming, but handle potential connection errors
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
 		}
 	}
 }
