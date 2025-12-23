@@ -39,13 +39,19 @@ func NewBedrockProxy() *BedrockProxy {
 		log.Printf("AWS_PROFILE not set, attempting to use [bedrock] profile")
 	}
 
-	// Determine region
+	// Determine region - prefer env var but fall back to profile's region
 	region := os.Getenv("AWS_REGION")
 	if region == "" {
 		region = os.Getenv("AWS_DEFAULT_REGION")
 	}
-	if region == "" {
-		region = "us-east-1" // Default region
+
+	// Build config options
+	var configOpts []func(*config.LoadOptions) error
+	configOpts = append(configOpts, config.WithSharedConfigProfile(profile))
+
+	// Only set region if explicitly provided; otherwise use profile's region from ~/.aws/config
+	if region != "" {
+		configOpts = append(configOpts, config.WithRegion(region))
 	}
 
 	// Try to load config with the specified profile
@@ -54,14 +60,15 @@ func NewBedrockProxy() *BedrockProxy {
 
 	if profile == "bedrock" {
 		// Try bedrock profile first
-		sdkConfig, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-			config.WithSharedConfigProfile(profile),
-		)
+		sdkConfig, err = config.LoadDefaultConfig(ctx, configOpts...)
 		if err != nil {
 			log.Printf("Failed to load [bedrock] profile, falling back to default: %v", err)
-			// Fall back to default
-			sdkConfig, err = config.LoadDefaultConfig(ctx, config.WithRegion(region))
+			// Fall back to default profile (remove the profile option)
+			fallbackOpts := []func(*config.LoadOptions) error{}
+			if region != "" {
+				fallbackOpts = append(fallbackOpts, config.WithRegion(region))
+			}
+			sdkConfig, err = config.LoadDefaultConfig(ctx, fallbackOpts...)
 			if err != nil {
 				log.Fatalf("Failed to load AWS config: %v", err)
 			}
@@ -69,15 +76,17 @@ func NewBedrockProxy() *BedrockProxy {
 			log.Printf("Successfully loaded AWS [bedrock] profile")
 		}
 	} else {
-		// Use specified profile or default
-		sdkConfig, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-			config.WithSharedConfigProfile(profile),
-		)
+		// Use specified profile
+		sdkConfig, err = config.LoadDefaultConfig(ctx, configOpts...)
 		if err != nil {
 			log.Fatalf("Failed to load AWS config with profile %s: %v", profile, err)
 		}
 		log.Printf("Successfully loaded AWS profile: %s", profile)
+	}
+
+	// Get the resolved region for logging
+	if region == "" {
+		region = sdkConfig.Region
 	}
 
 	// Create Bedrock Runtime client

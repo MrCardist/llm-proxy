@@ -63,9 +63,10 @@ claude_code_proxy:
 
 
 # AWS Bedrock provider (uses IAM authentication)
+# Region is read from ~/.aws/config profile, no default needed
 bedrock:
-  enabled: ${BEDROCK_ENABLED:-true}
-  region: ${AWS_REGION:-us-east-1}
+  enabled: ${BEDROCK_ENABLED:-false}
+  region: ${AWS_REGION:-}
   profile: ${AWS_PROFILE:-bedrock}
 
 # Multi-Provider (Federated Model Routing)
