@@ -69,9 +69,10 @@ type YAMLConfig struct {
 	Features FeaturesConfig `yaml:"features"`
 
 	// Providers configuration
-	Providers    map[string]ProviderConfig         `yaml:"providers"`
-	LocalLLMs    map[string]LocalLLMProviderConfig `yaml:"local_llms,omitempty"`
-	ClaudeCodeProxy *ClaudeCodeProxyConfig        `yaml:"claude_code_proxy,omitempty"`
+	Providers       map[string]ProviderConfig         `yaml:"providers"`
+	LocalLLMs       map[string]LocalLLMProviderConfig `yaml:"local_llms,omitempty"`
+	ClaudeCodeProxy *ClaudeCodeProxyConfig            `yaml:"claude_code_proxy,omitempty"`
+	MultiProvider   *MultiProviderConfig              `yaml:"multi_provider,omitempty"`
 }
 
 // FeaturesConfig represents feature toggle configuration
@@ -221,6 +222,30 @@ type ClaudeCodeModelRouting struct {
 type ClaudeCodeThinkTagConfig struct {
 	Enabled                   bool `yaml:"enabled"`
 	ConvertToAnthropicFormat  bool `yaml:"convert_to_anthropic_format"` // Convert <think> tags to Anthropic thinking format
+}
+
+// MultiProviderConfig represents configuration for federated/multi-provider routing
+type MultiProviderConfig struct {
+	Enabled             bool                        `yaml:"enabled"`
+	HealthCheckInterval int                         `yaml:"health_check_interval,omitempty"` // Health check interval in seconds (default: 30)
+	Models              map[string]MultiModelConfig `yaml:"models"`                          // Federated model configurations
+}
+
+// MultiModelConfig represents configuration for a single federated model
+type MultiModelConfig struct {
+	Enabled  bool                    `yaml:"enabled"`
+	Aliases  []string                `yaml:"aliases,omitempty"`  // Alternative names for this model
+	Primary  MultiBackendConfig      `yaml:"primary"`            // Primary backend (usually on-prem)
+	Fallback MultiBackendConfig      `yaml:"fallback"`           // Fallback backend (usually cloud)
+	Strategy string                  `yaml:"strategy,omitempty"` // Routing strategy: "primary-with-failover" (default), "weighted", "cost-optimized"
+}
+
+// MultiBackendConfig represents configuration for a backend in multi-provider setup
+type MultiBackendConfig struct {
+	Provider      string `yaml:"provider"`                   // Provider name (e.g., "gpt-oss", "bedrock")
+	Model         string `yaml:"model"`                      // Model name for this backend
+	MaxLatencyMs  int    `yaml:"max_latency_ms,omitempty"`   // Max latency before failover (in milliseconds)
+	MaxQueueDepth int    `yaml:"max_queue_depth,omitempty"`  // Max queue depth before failover
 }
 
 // ModelConfig represents configuration for a specific model

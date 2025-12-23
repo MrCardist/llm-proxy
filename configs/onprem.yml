@@ -67,3 +67,41 @@ bedrock:
   enabled: ${BEDROCK_ENABLED:-true}
   region: ${AWS_REGION:-us-east-1}
   profile: ${AWS_PROFILE:-bedrock}
+
+# Multi-Provider (Federated Model Routing)
+# Enables automatic failover between on-prem primary and cloud fallback
+multi_provider:
+  enabled: true
+  health_check_interval: 30  # seconds between health checks
+  models:
+    # GPT-OSS model with Bedrock fallback
+    gpt-oss-120b:
+      enabled: true
+      aliases:
+        - "openai/gpt-oss-120b"
+        - "gpt-oss"
+      primary:
+        provider: "gpt-oss"
+        model: "openai/gpt-oss-120b"
+        max_latency_ms: 5000
+        max_queue_depth: 50
+      fallback:
+        provider: "bedrock"
+        model: "openai.gpt-oss-120b-1:0"
+      strategy: "primary-with-failover"
+
+    # Qwen model with Claude fallback
+    qwen3-thinking:
+      enabled: true
+      aliases:
+        - "qwen/qwen3-next-80b-a3b-thinking"
+        - "qwen-thinking"
+      primary:
+        provider: "qwen"
+        model: "qwen/qwen3-next-80b-a3b-thinking"
+        max_latency_ms: 5000
+        max_queue_depth: 50
+      fallback:
+        provider: "bedrock"
+        model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      strategy: "primary-with-failover"

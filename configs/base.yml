@@ -1083,3 +1083,57 @@ claude_code_proxy:
   target_model: "qwen/qwen3-next-80b-a3b-thinking"
   parameter_mapping:
     max_tokens: "max_completion_tokens"  # Claude uses max_tokens, but local LLMs may use max_completion_tokens
+
+# =============================================================================
+# MULTI-PROVIDER (FEDERATED) MODEL ROUTING
+# =============================================================================
+# Enables high-availability routing with automatic failover between on-premises
+# and cloud backends. Requests are routed to the primary (on-prem) backend when
+# available and healthy, with automatic failover to the fallback (cloud) backend.
+
+multi_provider:
+  enabled: false  # Disabled by default - enable in onprem.yml
+  health_check_interval: 30  # Health check interval in seconds
+
+  models:
+    # GPT-OSS 120B: On-prem vLLM with AWS Bedrock failover
+    gpt-oss-120b:
+      enabled: true
+      aliases: ["openai/gpt-oss-120b", "gpt-oss"]
+      primary:
+        provider: "gpt-oss"
+        model: "openai/gpt-oss-120b"
+        max_latency_ms: 5000   # Failover if P95 latency > 5s
+        max_queue_depth: 50    # Failover if queue depth > 50
+      fallback:
+        provider: "bedrock"
+        model: "openai.gpt-oss-120b-1:0"
+      strategy: "primary-with-failover"
+
+    # GPT-OSS 20B: On-prem vLLM with AWS Bedrock failover
+    gpt-oss-20b:
+      enabled: true
+      aliases: ["openai/gpt-oss-20b"]
+      primary:
+        provider: "gpt-oss"
+        model: "openai/gpt-oss-20b"
+        max_latency_ms: 3000
+        max_queue_depth: 100
+      fallback:
+        provider: "bedrock"
+        model: "openai.gpt-oss-20b-1:0"
+      strategy: "primary-with-failover"
+
+    # Qwen3 with Bedrock failover
+    qwen3-235b:
+      enabled: true
+      aliases: ["qwen/qwen3-235b", "qwen3-235b-a22b"]
+      primary:
+        provider: "qwen"
+        model: "qwen/qwen3-next-80b-a3b-thinking"
+        max_latency_ms: 5000
+        max_queue_depth: 50
+      fallback:
+        provider: "bedrock"
+        model: "qwen.qwen3-235b-a22b-2507-v1:0"
+      strategy: "primary-with-failover"

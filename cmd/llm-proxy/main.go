@@ -565,6 +565,18 @@ func runServer(yamlConfig *config.YAMLConfig) {
 		}
 	}
 
+	// Register Multi-Provider (federated model routing) if enabled
+	if yamlConfig.MultiProvider != nil && yamlConfig.MultiProvider.Enabled {
+		multiProvider := providers.NewMultiProvider(yamlConfig.MultiProvider, globalProviderManager)
+		globalProviderManager.RegisterProvider(multiProvider)
+		if !debugMode {
+			modelCount := len(yamlConfig.MultiProvider.Models)
+			logger.Info("Registered Multi-Provider for federated model routing",
+				"endpoint", "/multi/v1/chat/completions",
+				"models", modelCount)
+		}
+	}
+
 	// Add middleware (order matters for streaming)
 	r.Use(middleware.MetaURLRewritingMiddleware(globalProviderManager)) // URL rewriting must happen first
 
