@@ -415,7 +415,21 @@ providers:
       burst_requests: 100
 
     models:
-      # Anthropic Claude models on Bedrock
+      # Anthropic Claude models on Bedrock (with cross-region inference profiles)
+      "us.anthropic.claude-sonnet-4-5-20250929-v1:0":
+        enabled: true
+        aliases: ["bedrock-claude-sonnet-4.5-us", "bedrock-sonnet-4.5-us"]
+        limits:
+          tokens_per_minute: 80_000
+          requests_per_minute: 1_000
+          tokens_per_day: 1_920_000
+          requests_per_day: 1_440_000
+          burst_tokens: 8_000
+          burst_requests: 100
+        pricing:
+          input: 3.30
+          output: 16.50
+
       "anthropic.claude-sonnet-4-5-20250929-v1:0":
         enabled: true
         aliases: ["bedrock-claude-sonnet-4.5", "bedrock-sonnet-4.5"]
@@ -427,8 +441,22 @@ providers:
           burst_tokens: 8_000
           burst_requests: 100
         pricing:
-          input: 3.00
-          output: 15.00
+          input: 6.60
+          output: 24.75
+
+      "global.anthropic.claude-opus-4-5-20251101-v1:0":
+        enabled: true
+        aliases: ["bedrock-claude-opus-4.5-global", "bedrock-opus-4.5-global"]
+        limits:
+          tokens_per_minute: 40_000
+          requests_per_minute: 1_000
+          tokens_per_day: 960_000
+          requests_per_day: 1_440_000
+          burst_tokens: 4_000
+          burst_requests: 100
+        pricing:
+          input: 5.00
+          output: 25.00
 
       "anthropic.claude-opus-4-5-20251101-v1:0":
         enabled: true
@@ -443,6 +471,20 @@ providers:
         pricing:
           input: 15.00
           output: 75.00
+
+      "us.anthropic.claude-haiku-4-5-20251001-v1:0":
+        enabled: true
+        aliases: ["bedrock-claude-haiku-4.5-us", "bedrock-haiku-4.5-us"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 1.10
+          output: 5.50
 
       "anthropic.claude-3-5-haiku-20241022-v1:0":
         enabled: true
@@ -473,7 +515,49 @@ providers:
           input: 0.99
           output: 0.99
 
-      # Amazon Nova models on Bedrock
+      # Amazon Nova models on Bedrock (with cross-region profiles)
+      "us.amazon.nova-premier-v1:0":
+        enabled: true
+        aliases: ["bedrock-nova-premier-us"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 2.50
+          output: 0.625
+
+      "amazon.nova-premier-v1:0":
+        enabled: true
+        aliases: ["bedrock-nova-premier"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 2.50
+          output: 0.625
+
+      "us.amazon.nova-pro-v1:0":
+        enabled: true
+        aliases: ["bedrock-nova-pro-us"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.80
+          output: 0.20
+
       "amazon.nova-pro-v1:0":
         enabled: true
         aliases: ["bedrock-nova-pro"]
@@ -486,7 +570,21 @@ providers:
           burst_requests: 100
         pricing:
           input: 0.80
-          output: 3.20
+          output: 0.20
+
+      "us.amazon.nova-lite-v1:0":
+        enabled: true
+        aliases: ["bedrock-nova-lite-us"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.06
+          output: 0.015
 
       "amazon.nova-lite-v1:0":
         enabled: true
@@ -500,7 +598,207 @@ providers:
           burst_requests: 100
         pricing:
           input: 0.06
-          output: 0.24
+          output: 0.015
+
+      "us.amazon.nova-micro-v1:0":
+        enabled: true
+        aliases: ["bedrock-nova-micro-us"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.035
+          output: 0.00875
+
+      "amazon.nova-micro-v1:0":
+        enabled: true
+        aliases: ["bedrock-nova-micro"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.035
+          output: 0.00875
+
+      # DeepSeek models on Bedrock (with cross-region profiles)
+      "us.deepseek.r1-v1:0":
+        enabled: true
+        aliases: ["bedrock-deepseek-r1-us"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 1.35
+          output: 5.40
+
+      "deepseek.r1-v1:0":
+        enabled: true
+        aliases: ["bedrock-deepseek-r1"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 1.35
+          output: 5.40
+
+      "deepseek.v3-v1:0":
+        enabled: true
+        aliases: ["bedrock-deepseek-v3"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.58
+          output: 1.68
+
+      # OpenAI GPT-OSS models on Bedrock
+      "openai.gpt-oss-120b-1:0":
+        enabled: true
+        aliases: ["bedrock-gpt-oss-120b"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.15
+          output: 0.60
+
+      "openai.gpt-oss-20b-1:0":
+        enabled: true
+        aliases: ["bedrock-gpt-oss-20b"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.07
+          output: 0.30
+
+      # Qwen models on Bedrock
+      "qwen.qwen3-235b-a22b-2507-v1:0":
+        enabled: true
+        aliases: ["bedrock-qwen3-235b"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.22
+          output: 0.88
+
+      "qwen.qwen3-coder-480b-a35b-v1:0":
+        enabled: true
+        aliases: ["bedrock-qwen3-coder-480b"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.22
+          output: 1.80
+
+      "qwen.qwen3-coder-30b-a3b-v1:0":
+        enabled: true
+        aliases: ["bedrock-qwen3-coder-30b"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.15
+          output: 0.60
+
+      "qwen.qwen3-32b-v1:0":
+        enabled: true
+        aliases: ["bedrock-qwen3-32b"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.15
+          output: 0.60
+
+      # Amazon Titan models on Bedrock
+      "amazon.titan-tg1-large":
+        enabled: true
+        aliases: ["bedrock-titan-tg1-large"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.80
+          output: 2.40
+
+      "amazon.titan-text-lite-v1":
+        enabled: true
+        aliases: ["bedrock-titan-text-lite"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.15
+          output: 0.20
+
+      "amazon.titan-text-express-v1":
+        enabled: true
+        aliases: ["bedrock-titan-text-express"]
+        limits:
+          tokens_per_minute: 200_000
+          requests_per_minute: 1_000
+          tokens_per_day: 4_800_000
+          requests_per_day: 1_440_000
+          burst_tokens: 20_000
+          burst_requests: 100
+        pricing:
+          input: 0.20
+          output: 0.60
 
   # ---------------------------------------------------------------------------
   # GOOGLE GEMINI PROVIDER
