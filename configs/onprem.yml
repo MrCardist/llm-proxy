@@ -19,14 +19,16 @@ local_llms:
     enabled: true
     default_model: "openai/gpt-oss-120b"
     thinking_tag_fix: true
-    request_timeout: 120
-    max_retries: 2
+    request_timeout: ${LOCAL_LLM_TIMEOUT:-120}
+    max_retries: ${LOCAL_LLM_RETRY_COUNT:-2}
     models:
       "openai/gpt-oss-120b":
         enabled: true
         endpoints:
-          - url: "http://dgx01.arcs.oregonstate.edu:8000/v1"
-            api_key: ""
+          - url: "${GPT_OSS_ENDPOINT_1:-http://192.168.1.100:8000/v1}"
+            api_key: "${GPT_OSS_API_KEY:-}"
+          - url: "${GPT_OSS_ENDPOINT_2:-http://192.168.1.101:8000/v1}"
+            api_key: "${GPT_OSS_API_KEY:-}"
         pricing:
           input: 0.1
           output: 0.4
@@ -34,14 +36,16 @@ local_llms:
     enabled: true  # Enable for development testing
     default_model: "qwen/qwen3-next-80b-a3b-thinking"
     thinking_tag_fix: true
-    request_timeout: 120
-    max_retries: 2
+    request_timeout: ${LOCAL_LLM_TIMEOUT:-120}
+    max_retries: ${LOCAL_LLM_RETRY_COUNT:-2}
     models:
       "qwen/qwen3-next-80b-a3b-thinking":
         enabled: true
         endpoints:
-          - url: "http://dgx01.arcs.oregonstate.edu:8005/v1"
-            api_key: ""
+          - url: "${QWEN_ENDPOINT_1:-http://192.168.1.200:8001/v1}"
+            api_key: "${QWEN_API_KEY:-}"
+          - url: "${QWEN_ENDPOINT_2:-http://192.168.1.201:8001/v1}"
+            api_key: "${QWEN_API_KEY:-}"
         pricing:
           input: 0.0
           output: 0.0
