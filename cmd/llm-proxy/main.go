@@ -519,6 +519,13 @@ func runServer(yamlConfig *config.YAMLConfig) {
 	geminiProvider := providers.NewGeminiProxy()
 	globalProviderManager.RegisterProvider(geminiProvider)
 
+	// Register AWS Bedrock provider
+	bedrockProvider := providers.NewBedrockProxy()
+	globalProviderManager.RegisterProvider(bedrockProvider)
+	if !debugMode {
+		logger.Info("Registered AWS Bedrock provider")
+	}
+
 	// Register local LLM providers
 	if yamlConfig.LocalLLMs != nil {
 		for providerName, providerConfig := range yamlConfig.LocalLLMs {

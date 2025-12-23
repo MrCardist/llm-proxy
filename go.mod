@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.36.6
 	github.com/aws/aws-sdk-go-v2/config v1.29.18
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.19.6
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.23.1
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.44.1
 	github.com/gorilla/mux v1.8.1
 	github.com/hbollon/go-edlib v1.6.0
@@ -17,6 +18,7 @@ require (
 
 require (
 	github.com/Microsoft/go-winio v0.5.0 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.7 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.71 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.33 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.37 // indirect
