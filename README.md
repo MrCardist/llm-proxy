@@ -176,6 +176,21 @@ features:
 
 ## API Endpoints
 
+### Summary Table
+
+| Prefix | Format | Backend | Notes |
+|--------|--------|---------|-------|
+| `/openai/*` | OpenAI | Real OpenAI API | Cloud only |
+| `/anthropic/*` | Anthropic | Real Anthropic API | Cloud only |
+| `/gemini/*` | Gemini | Real Gemini API | Cloud only |
+| `/bedrock/*` | Mixed | AWS Bedrock | 28+ models (Claude, Nova, etc.) |
+| `/gpt-oss/*` | OpenAI | Local vLLM | On-prem with failover |
+| `/qwen/*` | OpenAI | Local vLLM | On-prem, `<think>` tag fix |
+| `/cc-qwen/*` | **Anthropic** | Local vLLM | Claude Code compatible |
+| `/multi/*` | OpenAI | On-prem + Cloud | Intelligent failover |
+| `/meta/{userID}/*` | Various | Various | User-specific routing |
+| `/health` | JSON | N/A | Status endpoint |
+
 ### General
 
 - `GET /health` - Health check endpoint for all providers
@@ -196,6 +211,22 @@ features:
 - `POST /gemini/v1/models/{model}:generateContent` - Gemini content generation (streaming supported)
 - `POST /gemini/v1/models/{model}:streamGenerateContent` - Explicit streaming endpoint
 - `*  /gemini/v1/*` - All other Gemini API endpoints
+
+### AWS Bedrock
+
+- `POST /bedrock/model/{modelId}/invoke` - Bedrock model invocation (streaming supported)
+- `*  /bedrock/*` - All other Bedrock API endpoints
+
+### Local LLMs
+
+- `POST /gpt-oss/v1/chat/completions` - Local GPT-OSS models (OpenAI-compatible)
+- `POST /qwen/v1/chat/completions` - Local Qwen models (OpenAI-compatible)
+- `POST /cc-qwen/v1/messages` - Claude Code proxy to local Qwen (Anthropic-compatible)
+
+### Multi-Provider (Federated Routing)
+
+- `POST /multi/v1/chat/completions` - Intelligent routing with automatic failover
+  - Example: Use `"model": "gpt-oss-120b"` to route to on-prem primary with Bedrock fallback
 
 ## Architecture
 
