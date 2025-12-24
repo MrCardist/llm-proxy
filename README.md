@@ -4,6 +4,30 @@
 
 A simple, Go-based alternative to the `litellm` proxy, without all the extra stuff you don't need! A modular reverse proxy that forwards requests to various LLM providers (OpenAI, Anthropic, Gemini) using Go and the Gorilla web toolkit.
 
+## Features of Dirk's Fork
+
+This fork adds enterprise-grade features for hybrid cloud/on-premises deployments:
+
+- **AWS Bedrock Support**: Full integration with AWS Bedrock including 28+ models (Claude, Nova, DeepSeek, GPT-OSS, Qwen, Titan)
+  - Smart AWS profile precedence: `AWS_PROFILE` env var → `[bedrock]` profile → `default` profile
+  - Region from `~/.aws/config` profile (optional override via `AWS_REGION`)
+- **Local LLM Integration**: Support for on-premises vLLM deployments
+  - `/gpt-oss/*` - Local GPT-OSS models via OpenAI-compatible endpoints
+  - `/qwen/*` - Local Qwen models with automatic `<think>` tag processing
+  - Multi-endpoint failover with immediate rotation
+- **Multi-Provider Routing (`/multi/*`)**: Intelligent federated model routing with automatic failover
+  - Primary (on-prem) → Fallback (cloud) strategy
+  - Health checking with configurable intervals
+  - Latency and queue depth thresholds
+  - Request format transformation (OpenAI ↔ Anthropic)
+  - Model aliasing support
+- **Claude Code Proxy (`/cc-qwen/*`)**: Anthropic API format → OpenAI format converter for local models
+  - Enables Claude Code compatibility with local Qwen models
+- **Debug Mode**: Colored curl-equivalent request/response output (`--llm-debug` flag)
+  - Cyan requests, green responses, yellow info
+  - Pretty-printed JSON with sensitive data redacted
+- **Environment-based Configuration**: Full `.env` support with `${VAR:-default}` expansion in YAML
+
 ## Features
 
 - **Multi-provider support**: Full support for OpenAI, Anthropic, and Gemini
