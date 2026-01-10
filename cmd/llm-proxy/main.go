@@ -636,7 +636,15 @@ func runServer(yamlConfig *config.YAMLConfig) {
 	// Health check endpoint
 	r.HandleFunc("/health", healthHandler).Methods("GET", "HEAD")
 
-	// Register routes for all providers centrally
+	// Register extra routes FIRST (more specific routes before catch-all PathPrefix)
+	for name, provider := range globalProviderManager.GetAllProviders() {
+		provider.RegisterExtraRoutes(r)
+		if !debugMode {
+			logger.Info("Registered extra routes for provider", "provider", name)
+		}
+	}
+
+	// Register routes for all providers centrally (catch-all PathPrefix routes last)
 	for name, provider := range globalProviderManager.GetAllProviders() {
 		// Direct provider routes
 		r.PathPrefix(fmt.Sprintf("/%s/", name)).Handler(provider.Proxy()).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
@@ -648,14 +656,6 @@ func runServer(yamlConfig *config.YAMLConfig) {
 		logger.Info("Registered provider routes", "provider", name,
 			"direct_path", fmt.Sprintf("/%s/", name),
 			"meta_path", fmt.Sprintf("/meta/{userID}/%s/", name))
-	}
-
-	// Register extra routes for all providers (e.g., compatibility routes)
-	for name, provider := range globalProviderManager.GetAllProviders() {
-		provider.RegisterExtraRoutes(r)
-		if !debugMode {
-			logger.Info("Registered extra routes for provider", "provider", name)
-		}
 	}
 
 	// Only show startup logs if not in debug mode
