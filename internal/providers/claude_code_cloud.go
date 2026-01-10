@@ -843,7 +843,10 @@ func (p *ClaudeCodeCloud) handleForcedStreamingRequest(w http.ResponseWriter, ba
 	json.NewEncoder(w).Encode(claudeResp)
 }
 
-// handleStreamingRequest handles streaming requests
+// handleStreamingRequest handles streaming requests with support for:
+// - Text content (content field)
+// - Thinking/reasoning content (reasoning_content field from Fireworks GLM)
+// - Tool calls (tool_calls field)
 func (p *ClaudeCodeCloud) handleStreamingRequest(w http.ResponseWriter, backendURL, apiKey string, requestBody []byte, requestedModel string) {
 	// Set up SSE headers for Anthropic format
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -883,16 +886,40 @@ func (p *ClaudeCodeCloud) handleStreamingRequest(w http.ResponseWriter, backendU
 		},
 	})
 
-	// State for tracking thinking vs text content
+	// State tracking
 	var contentBuffer strings.Builder
+	var thinkingBuffer strings.Builder
 	inThinkingBlock := false
 	thinkingBlockStarted := false
 	textBlockStarted := false
 	currentBlockIndex := 0
+	finishReason := "end_turn"
+
+	// Tool call state tracking
+	type toolCallState struct {
+		id        string
+		name      string
+		arguments strings.Builder
+		started   bool
+		index     int // block index in Anthropic response
+	}
+	toolCalls := make(map[int]*toolCallState) // keyed by OpenAI tool_calls index
 
 	flushContent := func() {
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
+		}
+	}
+
+	// Helper to close current block and start text block if needed
+	closeThinkingStartText := func() {
+		if thinkingBlockStarted && inThinkingBlock {
+			p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": currentBlockIndex,
+			})
+			inThinkingBlock = false
+			currentBlockIndex++
 		}
 	}
 
@@ -905,54 +932,34 @@ func (p *ClaudeCodeCloud) handleStreamingRequest(w http.ResponseWriter, backendU
 			data := strings.TrimPrefix(line, "data: ")
 
 			if data == "[DONE]" {
-				// Flush any remaining buffered content
-				buffered := contentBuffer.String()
-				if buffered != "" {
-					if inThinkingBlock {
-						if !thinkingBlockStarted {
-							p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
-								"type":  "content_block_start",
-								"index": currentBlockIndex,
-								"content_block": map[string]interface{}{
-									"type":     "thinking",
-									"thinking": "",
-								},
-							})
-							thinkingBlockStarted = true
-						}
-						p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-							"type":  "content_block_delta",
-							"index": currentBlockIndex,
-							"delta": map[string]interface{}{
-								"type":     "thinking_delta",
-								"thinking": buffered,
-							},
-						})
-					} else if textBlockStarted {
-						p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-							"type":  "content_block_delta",
-							"index": currentBlockIndex,
-							"delta": map[string]interface{}{
-								"type": "text_delta",
-								"text": buffered,
-							},
-						})
-					}
-				}
-
-				// Close any open blocks
-				if thinkingBlockStarted || textBlockStarted {
+				// Close any open text block
+				if textBlockStarted {
+					p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+						"type":  "content_block_stop",
+						"index": currentBlockIndex,
+					})
+				} else if thinkingBlockStarted && inThinkingBlock {
 					p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
 						"type":  "content_block_stop",
 						"index": currentBlockIndex,
 					})
 				}
 
+				// Close any open tool call blocks
+				for _, tc := range toolCalls {
+					if tc.started {
+						p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+							"type":  "content_block_stop",
+							"index": tc.index,
+						})
+					}
+				}
+
 				// Send message_delta with stop_reason
 				p.writeAnthropicStreamEvent(w, "message_delta", map[string]interface{}{
 					"type": "message_delta",
 					"delta": map[string]interface{}{
-						"stop_reason":   "end_turn",
+						"stop_reason":   finishReason,
 						"stop_sequence": nil,
 					},
 					"usage": map[string]interface{}{
@@ -969,188 +976,321 @@ func (p *ClaudeCodeCloud) handleStreamingRequest(w http.ResponseWriter, backendU
 
 			// Parse OpenAI streaming chunk
 			var openaiChunk map[string]interface{}
-			if err := json.Unmarshal([]byte(data), &openaiChunk); err == nil {
-				if choices, ok := openaiChunk["choices"].([]interface{}); ok && len(choices) > 0 {
-					if choice, ok := choices[0].(map[string]interface{}); ok {
-						if delta, ok := choice["delta"].(map[string]interface{}); ok {
-							if content, ok := delta["content"].(string); ok && content != "" {
-								contentBuffer.WriteString(content)
-								fullContent := contentBuffer.String()
+			if err := json.Unmarshal([]byte(data), &openaiChunk); err != nil {
+				continue
+			}
 
-								// Check for <think> tag at start
-								if !thinkingBlockStarted && !textBlockStarted {
-									if strings.HasPrefix(fullContent, "<think>") {
-										inThinkingBlock = true
-										thinkingBlockStarted = true
-										p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
-											"type":  "content_block_start",
-											"index": currentBlockIndex,
-											"content_block": map[string]interface{}{
-												"type":     "thinking",
-												"thinking": "",
-											},
-										})
-										contentBuffer.Reset()
-										afterTag := strings.TrimPrefix(fullContent, "<think>")
-										if afterTag != "" {
-											if idx := strings.Index(afterTag, "</think>"); idx != -1 {
-												thinkingContent := afterTag[:idx]
-												if thinkingContent != "" {
-													p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-														"type":  "content_block_delta",
-														"index": currentBlockIndex,
-														"delta": map[string]interface{}{
-															"type":     "thinking_delta",
-															"thinking": thinkingContent,
-														},
-													})
-												}
-												p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
-													"type":  "content_block_stop",
-													"index": currentBlockIndex,
-												})
-												inThinkingBlock = false
-												currentBlockIndex++
+			choices, ok := openaiChunk["choices"].([]interface{})
+			if !ok || len(choices) == 0 {
+				continue
+			}
 
-												textContent := strings.TrimSpace(afterTag[idx+8:])
-												if textContent != "" {
-													textBlockStarted = true
-													p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
-														"type":  "content_block_start",
-														"index": currentBlockIndex,
-														"content_block": map[string]interface{}{
-															"type": "text",
-															"text": "",
-														},
-													})
-													p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-														"type":  "content_block_delta",
-														"index": currentBlockIndex,
-														"delta": map[string]interface{}{
-															"type": "text_delta",
-															"text": textContent,
-														},
-													})
-												}
-												contentBuffer.Reset()
-											} else {
-												p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-													"type":  "content_block_delta",
-													"index": currentBlockIndex,
-													"delta": map[string]interface{}{
-														"type":     "thinking_delta",
-														"thinking": afterTag,
-													},
-												})
-												contentBuffer.Reset()
-											}
-										}
-										flushContent()
-										continue
-									} else if len(fullContent) < 7 {
-										continue
-									} else {
-										textBlockStarted = true
-										p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
-											"type":  "content_block_start",
-											"index": currentBlockIndex,
-											"content_block": map[string]interface{}{
-												"type": "text",
-												"text": "",
-											},
-										})
-										p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-											"type":  "content_block_delta",
-											"index": currentBlockIndex,
-											"delta": map[string]interface{}{
-												"type": "text_delta",
-												"text": fullContent,
-											},
-										})
-										contentBuffer.Reset()
-										flushContent()
-										continue
-									}
-								}
+			choice, ok := choices[0].(map[string]interface{})
+			if !ok {
+				continue
+			}
 
-								// Already in a block - check for </think> transition
-								if inThinkingBlock {
-									if idx := strings.Index(fullContent, "</think>"); idx != -1 {
-										thinkingContent := fullContent[:idx]
-										if thinkingContent != "" {
-											p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-												"type":  "content_block_delta",
-												"index": currentBlockIndex,
-												"delta": map[string]interface{}{
-													"type":     "thinking_delta",
-													"thinking": thinkingContent,
-												},
-											})
-										}
-										p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
-											"type":  "content_block_stop",
-											"index": currentBlockIndex,
-										})
-										inThinkingBlock = false
-										currentBlockIndex++
+			// Check finish_reason
+			if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+				switch fr {
+				case "stop":
+					finishReason = "end_turn"
+				case "length":
+					finishReason = "max_tokens"
+				case "tool_calls":
+					finishReason = "tool_use"
+				default:
+					finishReason = "end_turn"
+				}
+			}
 
-										textContent := strings.TrimSpace(fullContent[idx+8:])
-										if textContent != "" {
-											textBlockStarted = true
-											p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
-												"type":  "content_block_start",
-												"index": currentBlockIndex,
-												"content_block": map[string]interface{}{
-													"type": "text",
-													"text": "",
-												},
-											})
-											p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-												"type":  "content_block_delta",
-												"index": currentBlockIndex,
-												"delta": map[string]interface{}{
-													"type": "text_delta",
-													"text": textContent,
-												},
-											})
-										}
-										contentBuffer.Reset()
-										flushContent()
-										continue
-									}
-									p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-										"type":  "content_block_delta",
-										"index": currentBlockIndex,
-										"delta": map[string]interface{}{
-											"type":     "thinking_delta",
-											"thinking": content,
-										},
-									})
-									contentBuffer.Reset()
-									if len(fullContent) >= 8 {
-										contentBuffer.WriteString(fullContent[len(fullContent)-8:])
-									} else {
-										contentBuffer.WriteString(fullContent)
-									}
-									if contentBuffer.Len() > 8 {
-										contentBuffer.Reset()
-									}
-								} else if textBlockStarted {
-									p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
-										"type":  "content_block_delta",
-										"index": currentBlockIndex,
-										"delta": map[string]interface{}{
-											"type": "text_delta",
-											"text": content,
-										},
-									})
-									contentBuffer.Reset()
-								}
-								flushContent()
+			delta, ok := choice["delta"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			// Handle reasoning_content (Fireworks GLM thinking)
+			if reasoningContent, ok := delta["reasoning_content"].(string); ok && reasoningContent != "" {
+				if !thinkingBlockStarted {
+					thinkingBlockStarted = true
+					inThinkingBlock = true
+					p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+						"type":  "content_block_start",
+						"index": currentBlockIndex,
+						"content_block": map[string]interface{}{
+							"type":     "thinking",
+							"thinking": "",
+						},
+					})
+				}
+				if inThinkingBlock {
+					p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+						"type":  "content_block_delta",
+						"index": currentBlockIndex,
+						"delta": map[string]interface{}{
+							"type":     "thinking_delta",
+							"thinking": reasoningContent,
+						},
+					})
+				}
+				flushContent()
+				continue
+			}
+
+			// Handle text content
+			if content, ok := delta["content"].(string); ok && content != "" {
+				// Close thinking block if open
+				closeThinkingStartText()
+
+				contentBuffer.WriteString(content)
+				fullContent := contentBuffer.String()
+
+				// Check for <think> tag at start (for models that use tags instead of reasoning_content)
+				if !thinkingBlockStarted && !textBlockStarted {
+					if strings.HasPrefix(fullContent, "<think>") {
+						inThinkingBlock = true
+						thinkingBlockStarted = true
+						p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+							"type":  "content_block_start",
+							"index": currentBlockIndex,
+							"content_block": map[string]interface{}{
+								"type":     "thinking",
+								"thinking": "",
+							},
+						})
+						contentBuffer.Reset()
+						afterTag := strings.TrimPrefix(fullContent, "<think>")
+						if afterTag != "" {
+							thinkingBuffer.WriteString(afterTag)
+						}
+						flushContent()
+						continue
+					} else if len(fullContent) < 7 {
+						// Buffer until we know if it's <think> or not
+						continue
+					} else {
+						// Start text block
+						textBlockStarted = true
+						p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+							"type":  "content_block_start",
+							"index": currentBlockIndex,
+							"content_block": map[string]interface{}{
+								"type": "text",
+								"text": "",
+							},
+						})
+						p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+							"type":  "content_block_delta",
+							"index": currentBlockIndex,
+							"delta": map[string]interface{}{
+								"type": "text_delta",
+								"text": fullContent,
+							},
+						})
+						contentBuffer.Reset()
+						flushContent()
+						continue
+					}
+				}
+
+				// Handle in-thinking content with </think> check
+				if inThinkingBlock {
+					thinkingBuffer.WriteString(content)
+					fullThinking := thinkingBuffer.String()
+
+					if idx := strings.Index(fullThinking, "</think>"); idx != -1 {
+						// Emit thinking content before tag
+						if idx > 0 {
+							p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+								"type":  "content_block_delta",
+								"index": currentBlockIndex,
+								"delta": map[string]interface{}{
+									"type":     "thinking_delta",
+									"thinking": fullThinking[:idx],
+								},
+							})
+						}
+						// Close thinking block
+						p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+							"type":  "content_block_stop",
+							"index": currentBlockIndex,
+						})
+						inThinkingBlock = false
+						currentBlockIndex++
+						thinkingBuffer.Reset()
+
+						// Start text block with remaining content
+						textContent := strings.TrimSpace(fullThinking[idx+8:])
+						if textContent != "" {
+							textBlockStarted = true
+							p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+								"type":  "content_block_start",
+								"index": currentBlockIndex,
+								"content_block": map[string]interface{}{
+									"type": "text",
+									"text": "",
+								},
+							})
+							p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+								"type":  "content_block_delta",
+								"index": currentBlockIndex,
+								"delta": map[string]interface{}{
+									"type": "text_delta",
+									"text": textContent,
+								},
+							})
+						}
+					} else {
+						// Still in thinking, emit delta
+						p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+							"type":  "content_block_delta",
+							"index": currentBlockIndex,
+							"delta": map[string]interface{}{
+								"type":     "thinking_delta",
+								"thinking": content,
+							},
+						})
+						// Keep last 8 chars in buffer to detect </think>
+						if thinkingBuffer.Len() > 16 {
+							thinkingBuffer.Reset()
+							thinkingBuffer.WriteString(fullThinking[len(fullThinking)-8:])
+						}
+					}
+					contentBuffer.Reset()
+					flushContent()
+					continue
+				}
+
+				// Regular text content
+				if textBlockStarted {
+					p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+						"type":  "content_block_delta",
+						"index": currentBlockIndex,
+						"delta": map[string]interface{}{
+							"type": "text_delta",
+							"text": content,
+						},
+					})
+					contentBuffer.Reset()
+				} else {
+					// Start text block
+					textBlockStarted = true
+					p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+						"type":  "content_block_start",
+						"index": currentBlockIndex,
+						"content_block": map[string]interface{}{
+							"type": "text",
+							"text": "",
+						},
+					})
+					p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+						"type":  "content_block_delta",
+						"index": currentBlockIndex,
+						"delta": map[string]interface{}{
+							"type": "text_delta",
+							"text": content,
+						},
+					})
+					contentBuffer.Reset()
+				}
+				flushContent()
+				continue
+			}
+
+			// Handle tool_calls
+			if toolCallsArray, ok := delta["tool_calls"].([]interface{}); ok {
+				for _, tc := range toolCallsArray {
+					toolCall, ok := tc.(map[string]interface{})
+					if !ok {
+						continue
+					}
+
+					// Get tool call index
+					tcIndex := 0
+					if idx, ok := toolCall["index"].(float64); ok {
+						tcIndex = int(idx)
+					}
+
+					// Get or create tool call state
+					tcState, exists := toolCalls[tcIndex]
+					if !exists {
+						tcState = &toolCallState{}
+						toolCalls[tcIndex] = tcState
+					}
+
+					// Get tool call ID
+					if id, ok := toolCall["id"].(string); ok && id != "" {
+						tcState.id = id
+					}
+
+					// Get function details
+					if function, ok := toolCall["function"].(map[string]interface{}); ok {
+						if name, ok := function["name"].(string); ok && name != "" {
+							tcState.name = name
+						}
+						if arguments, ok := function["arguments"].(string); ok {
+							tcState.arguments.WriteString(arguments)
+						}
+					}
+
+					// Start the tool_use block if not started
+					if !tcState.started && tcState.name != "" {
+						// Close any open text/thinking block first
+						if textBlockStarted {
+							p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+								"type":  "content_block_stop",
+								"index": currentBlockIndex,
+							})
+							textBlockStarted = false
+							currentBlockIndex++
+						} else if thinkingBlockStarted && inThinkingBlock {
+							p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+								"type":  "content_block_stop",
+								"index": currentBlockIndex,
+							})
+							inThinkingBlock = false
+							currentBlockIndex++
+						}
+
+						tcState.started = true
+						tcState.index = currentBlockIndex
+
+						// Generate a tool use ID if not provided
+						toolUseID := tcState.id
+						if toolUseID == "" {
+							toolUseID = "toolu_" + generateID()
+						}
+
+						p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+							"type":  "content_block_start",
+							"index": currentBlockIndex,
+							"content_block": map[string]interface{}{
+								"type":  "tool_use",
+								"id":    toolUseID,
+								"name":  tcState.name,
+								"input": map[string]interface{}{},
+							},
+						})
+						currentBlockIndex++
+					}
+
+					// Send input_json_delta for arguments
+					if tcState.started {
+						if function, ok := toolCall["function"].(map[string]interface{}); ok {
+							if arguments, ok := function["arguments"].(string); ok && arguments != "" {
+								p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+									"type":  "content_block_delta",
+									"index": tcState.index,
+									"delta": map[string]interface{}{
+										"type":         "input_json_delta",
+										"partial_json": arguments,
+									},
+								})
 							}
 						}
 					}
 				}
+				flushContent()
 			}
 		}
 	}
