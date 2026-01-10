@@ -541,9 +541,17 @@ func (p *ClaudeCodeCloud) convertToolCallToToolUse(toolCall map[string]interface
 		input = map[string]interface{}{}
 	}
 
+	// Normalize tool use ID to Claude format if needed
+	// Fireworks uses "functions.Name:0" format, Claude expects "toolu_xxx" or similar
+	toolUseID := id
+	if toolUseID == "" || strings.HasPrefix(toolUseID, "functions.") || strings.HasPrefix(toolUseID, "chatcmpl-tool-") {
+		// Generate a Claude-compatible ID
+		toolUseID = "toolu_" + generateID()
+	}
+
 	return &ClaudeContentBlock{
 		Type:  "tool_use",
-		ID:    id,
+		ID:    toolUseID,
 		Name:  name,
 		Input: input,
 	}
@@ -1255,9 +1263,10 @@ func (p *ClaudeCodeCloud) handleStreamingRequest(w http.ResponseWriter, backendU
 						tcState.started = true
 						tcState.index = currentBlockIndex
 
-						// Generate a tool use ID if not provided
+						// Normalize tool use ID to Claude format
+						// Fireworks uses "functions.Name:0", we need "toolu_xxx"
 						toolUseID := tcState.id
-						if toolUseID == "" {
+						if toolUseID == "" || strings.HasPrefix(toolUseID, "functions.") || strings.HasPrefix(toolUseID, "chatcmpl-tool-") {
 							toolUseID = "toolu_" + generateID()
 						}
 
