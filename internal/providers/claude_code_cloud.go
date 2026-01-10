@@ -891,6 +891,10 @@ func (p *ClaudeCodeCloud) handleStreamingRequest(w http.ResponseWriter, backendU
 			"role":    "assistant",
 			"content": []interface{}{},
 			"model":   requestedModel,
+			"usage": map[string]interface{}{
+				"input_tokens":  0,
+				"output_tokens": 0,
+			},
 		},
 	})
 
