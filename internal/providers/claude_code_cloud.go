@@ -641,11 +641,15 @@ func (p *ClaudeCodeCloud) Proxy() http.Handler {
 		}
 
 		// Handle streaming vs non-streaming
-		// Use streaming if client requested it OR if backend requires it (forceStream)
-		useStreaming := claudeReq.Stream || forceStream
-		if useStreaming {
+		if claudeReq.Stream {
+			// Client wants streaming - give them streaming
 			p.handleStreamingRequest(w, backendURL, apiKey, openaiReqBytes, claudeReq.Model)
+		} else if forceStream {
+			// Client wants non-streaming but backend requires streaming
+			// Collect streaming response and return as non-streaming JSON
+			p.handleForcedStreamingRequest(w, backendURL, apiKey, openaiReqBytes, claudeReq.Model)
 		} else {
+			// Normal non-streaming request
 			p.handleNonStreamingRequest(w, backendURL, apiKey, openaiReqBytes, claudeReq.Model)
 		}
 	})
@@ -730,6 +734,113 @@ func (p *ClaudeCodeCloud) handleNonStreamingRequest(w http.ResponseWriter, backe
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(anthropicResp)
+}
+
+// handleForcedStreamingRequest handles requests where the backend requires streaming
+// but the client wants a non-streaming response. It collects the streaming response
+// and returns it as a single JSON response.
+func (p *ClaudeCodeCloud) handleForcedStreamingRequest(w http.ResponseWriter, backendURL, apiKey string, requestBody []byte, requestedModel string) {
+	// Create HTTP request to backend
+	req, err := http.NewRequest("POST", backendURL, bytes.NewBuffer(requestBody))
+	if err != nil {
+		errorBytes, statusCode := p.createAnthropicError("internal_server_error", "Failed to create backend request", http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		w.Write(errorBytes)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "text/event-stream")
+
+	// Make the request
+	resp, err := p.client.Do(req)
+	if err != nil {
+		errorBytes, statusCode := p.createAnthropicError("service_unavailable", fmt.Sprintf("Backend request failed: %v", err), http.StatusServiceUnavailable)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		w.Write(errorBytes)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Collect streaming response content
+	var contentBuilder strings.Builder
+	var inputTokens, outputTokens int
+	var finishReason string
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+
+			if data == "[DONE]" {
+				break
+			}
+
+			var chunk map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &chunk); err == nil {
+				// Extract content from delta
+				if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+					if choice, ok := choices[0].(map[string]interface{}); ok {
+						if delta, ok := choice["delta"].(map[string]interface{}); ok {
+							if content, ok := delta["content"].(string); ok {
+								contentBuilder.WriteString(content)
+							}
+						}
+						if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+							finishReason = fr
+						}
+					}
+				}
+
+				// Extract usage if present
+				if usage, ok := chunk["usage"].(map[string]interface{}); ok {
+					if pt, ok := usage["prompt_tokens"].(float64); ok {
+						inputTokens = int(pt)
+					}
+					if ct, ok := usage["completion_tokens"].(float64); ok {
+						outputTokens = int(ct)
+					}
+				}
+			}
+		}
+	}
+
+	// Build the complete content
+	fullContent := contentBuilder.String()
+
+	// Convert to Anthropic response format
+	claudeResp := &ClaudeResponse{
+		ID:      "msg_" + generateID(),
+		Type:    "message",
+		Role:    "assistant",
+		Model:   requestedModel,
+		Content: p.parseThinkTagsToBlocks(fullContent),
+	}
+
+	// Set stop reason
+	switch finishReason {
+	case "stop":
+		claudeResp.StopReason = "end_turn"
+	case "length":
+		claudeResp.StopReason = "max_tokens"
+	case "tool_calls":
+		claudeResp.StopReason = "tool_use"
+	default:
+		claudeResp.StopReason = "end_turn"
+	}
+
+	claudeResp.Usage.InputTokens = inputTokens
+	claudeResp.Usage.OutputTokens = outputTokens
+
+	// Return as JSON response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(claudeResp)
 }
 
 // handleStreamingRequest handles streaming requests
