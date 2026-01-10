@@ -69,10 +69,11 @@ type YAMLConfig struct {
 	Features FeaturesConfig `yaml:"features"`
 
 	// Providers configuration
-	Providers       map[string]ProviderConfig         `yaml:"providers"`
-	LocalLLMs       map[string]LocalLLMProviderConfig `yaml:"local_llms,omitempty"`
-	ClaudeCodeProxy *ClaudeCodeProxyConfig            `yaml:"claude_code_proxy,omitempty"`
-	MultiProvider   *MultiProviderConfig              `yaml:"multi_provider,omitempty"`
+	Providers        map[string]ProviderConfig         `yaml:"providers"`
+	LocalLLMs        map[string]LocalLLMProviderConfig `yaml:"local_llms,omitempty"`
+	ClaudeCodeProxy  *ClaudeCodeProxyConfig            `yaml:"claude_code_proxy,omitempty"`
+	ClaudeCodeCloud  *ClaudeCodeCloudConfig            `yaml:"claude_code_cloud,omitempty"`
+	MultiProvider    *MultiProviderConfig              `yaml:"multi_provider,omitempty"`
 }
 
 // FeaturesConfig represents feature toggle configuration
@@ -246,6 +247,26 @@ type MultiBackendConfig struct {
 	Model         string `yaml:"model"`                      // Model name for this backend
 	MaxLatencyMs  int    `yaml:"max_latency_ms,omitempty"`   // Max latency before failover (in milliseconds)
 	MaxQueueDepth int    `yaml:"max_queue_depth,omitempty"`  // Max queue depth before failover
+}
+
+// ClaudeCodeCloudConfig represents configuration for the /cc endpoint (Claude Code cloud proxy)
+type ClaudeCodeCloudConfig struct {
+	Enabled bool                          `yaml:"enabled"`
+	Models  map[string]CCCloudModelConfig `yaml:"models"` // Model configurations keyed by local name (e.g., "hc/glm-4.7")
+}
+
+// CCCloudModelConfig represents configuration for a single model in Claude Code cloud
+type CCCloudModelConfig struct {
+	Backend   string              `yaml:"backend"`             // Backend type: "fireworks", "local", "openai"
+	Model     string              `yaml:"model"`               // Actual model name for the backend (e.g., "accounts/fireworks/models/glm-4p7")
+	Aliases   []string            `yaml:"aliases,omitempty"`   // Alternative names for this model
+	Endpoints []CCCloudEndpoint   `yaml:"endpoints,omitempty"` // For "local" backend: list of vLLM endpoints with failover
+}
+
+// CCCloudEndpoint represents a single endpoint for local vLLM backend
+type CCCloudEndpoint struct {
+	URL    string `yaml:"url"`               // Endpoint URL (supports env var expansion)
+	APIKey string `yaml:"api_key,omitempty"` // Optional API key (supports env var expansion)
 }
 
 // ModelConfig represents configuration for a specific model

@@ -21,6 +21,11 @@ This fork adds enterprise-grade features for hybrid cloud/on-premises deployment
   - Latency and queue depth thresholds
   - Request format transformation (OpenAI ↔ Anthropic)
   - Model aliasing support
+- **Claude Code Cloud (`/cc/*`)**: Production Anthropic-compatible endpoint for open-source models
+  - Supports Fireworks AI, local vLLM, and other OpenAI-compatible backends
+  - Model mapping: `hc/glm-4.7` → Fireworks `accounts/fireworks/models/glm-4p7`
+  - Seamless switching between cloud and on-prem backends
+  - Full streaming and tool use support
 - **Claude Code Proxy (`/cc-qwen/*`)**: Anthropic API format → OpenAI format converter for local models
   - Enables Claude Code compatibility with local Qwen models
 - **Debug Mode**: Colored curl-equivalent request/response output (`--llm-debug` flag)
@@ -186,7 +191,8 @@ features:
 | `/bedrock/*` | Mixed | AWS Bedrock | 28+ models (Claude, Nova, etc.) |
 | `/gpt-oss/*` | OpenAI | Local vLLM | On-prem with failover |
 | `/qwen/*` | OpenAI | Local vLLM | On-prem, `<think>` tag fix |
-| `/cc-qwen/*` | **Anthropic** | Local vLLM | Claude Code compatible |
+| `/cc/*` | **Anthropic** | Fireworks/Local | Claude Code production endpoint |
+| `/cc-qwen/*` | **Anthropic** | Local vLLM | Claude Code (local only) |
 | `/multi/*` | OpenAI | On-prem + Cloud | Intelligent failover |
 | `/meta/{userID}/*` | Various | Various | User-specific routing |
 | `/health` | JSON | N/A | Status endpoint |
@@ -227,6 +233,30 @@ features:
 
 - `POST /multi/v1/chat/completions` - Intelligent routing with automatic failover
   - Example: Use `"model": "gpt-oss-120b"` to route to on-prem primary with Bedrock fallback
+
+### Claude Code Cloud (`/cc`)
+
+Production Anthropic-compatible endpoint for Claude Code with open-source models:
+
+- `POST /cc/v1/messages` - Anthropic Messages API compatible
+- `POST /cc/v1/messages/count_tokens` - Token counting endpoint
+
+**Client Configuration** (`~/.claude/settings.json`):
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://llm.example.edu/cc/v1",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "hc/glm-4.7",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "hc/glm-4.7",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "hc/deepseek-v3"
+  }
+}
+```
+
+**Available models** (configurable in `configs/onprem.yml`):
+- `hc/glm-4.7` - GLM-4.7 via Fireworks
+- `hc/deepseek-v3` - DeepSeek V3 via Fireworks
+- `hc/kimi-k2` - Kimi K2 via Fireworks (good for tool use)
 
 ## Architecture
 

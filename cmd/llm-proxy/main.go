@@ -539,7 +539,7 @@ func runServer(yamlConfig *config.YAMLConfig) {
 		}
 	}
 
-	// Register Claude Code proxy if enabled
+	// Register Claude Code proxy if enabled (local vLLM backend)
 	if yamlConfig.ClaudeCodeProxy != nil && yamlConfig.ClaudeCodeProxy.Enabled {
 		// Create Claude Code proxy with provider manager for unified routing
 		claudeCodeProxy := providers.NewClaudeCodeProxy("cc-local", yamlConfig.ClaudeCodeProxy, globalProviderManager)
@@ -550,10 +550,25 @@ func runServer(yamlConfig *config.YAMLConfig) {
 				// Fallback to default supported providers
 				supportedProviders = []string{"qwen", "gpt-oss"}
 			}
-			logger.Info("Registered Claude Code proxy", 
-				"proxy", "cc-local", 
+			logger.Info("Registered Claude Code proxy",
+				"proxy", "cc-local",
 				"endpoint", "/cc-local/v1/messages",
 				"supported_providers", supportedProviders)
+		}
+	}
+
+	// Register Claude Code Cloud proxy if enabled (Fireworks/cloud backend)
+	if yamlConfig.ClaudeCodeCloud != nil && yamlConfig.ClaudeCodeCloud.Enabled {
+		claudeCodeCloud := providers.NewClaudeCodeCloud(yamlConfig.ClaudeCodeCloud)
+		globalProviderManager.RegisterProvider(claudeCodeCloud)
+		if !debugMode {
+			var modelNames []string
+			for name := range yamlConfig.ClaudeCodeCloud.Models {
+				modelNames = append(modelNames, name)
+			}
+			logger.Info("Registered Claude Code Cloud proxy",
+				"endpoint", "/cc/v1/messages",
+				"models", modelNames)
 		}
 	}
 

@@ -1137,3 +1137,47 @@ multi_provider:
         provider: "bedrock"
         model: "qwen.qwen3-235b-a22b-2507-v1:0"
       strategy: "primary-with-failover"
+
+# =============================================================================
+# CLAUDE CODE CLOUD PROXY (/cc)
+# =============================================================================
+# Production endpoint for Claude Code compatibility with open-source models.
+# Users configure ANTHROPIC_BASE_URL to point to /cc and use models like "hc/glm-4.7"
+# which get routed to the configured backend (Fireworks, local vLLM, etc.)
+
+claude_code_cloud:
+  enabled: false  # Disabled by default - enable in onprem.yml
+  models:
+    # GLM-4.7 via Fireworks
+    "hc/glm-4.7":
+      backend: "fireworks"
+      model: "accounts/fireworks/models/glm-4p7"
+      aliases: ["glm-4.7", "glm4"]
+
+    # DeepSeek V3 via Fireworks
+    "hc/deepseek-v3":
+      backend: "fireworks"
+      model: "accounts/fireworks/models/deepseek-v3p1"
+      aliases: ["deepseek-v3", "deepseek"]
+
+    # Qwen 2.5 VL 32B via Fireworks (vision model)
+    "hc/qwen-vl-32b":
+      backend: "fireworks"
+      model: "accounts/fireworks/models/qwen2p5-vl-32b-instruct"
+      aliases: ["qwen-vl", "qwen-vision"]
+
+    # Kimi K2 via Fireworks (good for function calling)
+    "hc/kimi-k2":
+      backend: "fireworks"
+      model: "accounts/fireworks/models/kimi-k2-instruct-0905"
+      aliases: ["kimi", "kimi-k2"]
+
+    # Example: Local Qwen model (for when GPUs are back)
+    # "hc/qwen-local":
+    #   backend: "local"
+    #   model: "qwen/qwen3-next-80b-a3b-thinking"
+    #   endpoints:
+    #     - url: "${QWEN_ENDPOINT_1:-http://192.168.1.200:8001/v1}"
+    #       api_key: "${QWEN_API_KEY:-}"
+    #     - url: "${QWEN_ENDPOINT_2:-http://192.168.1.201:8001/v1}"
+    #       api_key: "${QWEN_API_KEY:-}"

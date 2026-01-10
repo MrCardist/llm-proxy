@@ -106,3 +106,36 @@ multi_provider:
         provider: "bedrock"
         model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
       strategy: "primary-with-failover"
+
+# Claude Code Cloud Proxy (/cc)
+# Production Anthropic-compatible endpoint for Claude Code with open-source models
+# Users set ANTHROPIC_BASE_URL=https://llm.arcs.oregonstate.edu/cc/v1
+# and configure models like "hc/glm-4.7" in ~/.claude/settings.json
+claude_code_cloud:
+  enabled: true
+  models:
+    # GLM-4.7 via Fireworks - good general purpose model
+    "hc/glm-4.7":
+      backend: "fireworks"
+      model: "accounts/fireworks/models/glm-4p7"
+      aliases: ["glm-4.7", "glm4"]
+
+    # DeepSeek V3 via Fireworks - strong reasoning model
+    "hc/deepseek-v3":
+      backend: "fireworks"
+      model: "accounts/fireworks/models/deepseek-v3p1"
+      aliases: ["deepseek-v3", "deepseek"]
+
+    # Kimi K2 via Fireworks - good for function calling/tool use
+    "hc/kimi-k2":
+      backend: "fireworks"
+      model: "accounts/fireworks/models/kimi-k2-instruct-0905"
+      aliases: ["kimi", "kimi-k2"]
+
+    # Local Qwen (when GPUs available)
+    # "hc/qwen-local":
+    #   backend: "local"
+    #   model: "qwen/qwen3-next-80b-a3b-thinking"
+    #   endpoints:
+    #     - url: "${QWEN_ENDPOINT_1}"
+    #     - url: "${QWEN_ENDPOINT_2}"

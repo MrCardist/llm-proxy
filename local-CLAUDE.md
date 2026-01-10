@@ -131,9 +131,12 @@ claude_code_proxy:
 | `/openai/*` | OpenAI | Real OpenAI API | No local routing |
 | `/anthropic/*` | Anthropic | Real Anthropic API | |
 | `/gemini/*` | Gemini | Real Gemini API | |
+| `/bedrock/*` | Mixed | AWS Bedrock | 28+ models |
 | `/gpt-oss/*` | OpenAI | Local gpt-oss LLM | |
 | `/qwen/*` | OpenAI | Local Qwen LLM | `<think>` tag fix applied |
+| `/cc/*` | **Anthropic** | Fireworks/Local | Claude Code production endpoint |
 | `/cc-qwen/*` | **Anthropic** | Local Qwen LLM | Claude Code compatible |
+| `/multi/*` | OpenAI | On-prem + Cloud | Federated routing |
 
 ## Key Implementation Details
 
@@ -145,12 +148,31 @@ For Qwen models ending in `-thinking`:
 
 ### Claude Code Proxy (`internal/providers/claude_code_proxy.go`)
 
-Converts Anthropic API format to OpenAI format:
+Converts Anthropic API format to OpenAI format (for local vLLM):
 - Endpoint: `/cc-qwen/v1/messages` → proxies to `/qwen/v1/chat/completions`
 - Content blocks: Array of `{type: "text", text: "..."}` → single string
 - Parameters: `max_tokens` → `max_completion_tokens`
 - Response: OpenAI choices → Claude content blocks
 - Streaming: OpenAI SSE → Claude SSE events
+
+### Claude Code Cloud (`internal/providers/claude_code_cloud.go`)
+
+Production endpoint for Claude Code with configurable backends (Fireworks, local vLLM):
+- Endpoint: `/cc/v1/messages` - Anthropic Messages API compatible
+- Model mapping: `hc/glm-4.7` → `accounts/fireworks/models/glm-4p7` (Fireworks)
+- Supports multiple backends: `fireworks`, `local`, `openai`
+- Configuration in `configs/onprem.yml` under `claude_code_cloud`
+
+Client configuration (`~/.claude/settings.json`):
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://llm.example.edu/cc/v1",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "hc/glm-4.7",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "hc/glm-4.7"
+  }
+}
+```
 
 ### Local LLM Failover (`internal/providers/local_llm.go`)
 
