@@ -128,10 +128,12 @@ func (p *ClaudeCodeCloud) getBackendURL(modelCfg *config.CCCloudModelConfig) (st
 }
 
 // convertAnthropicToOpenAI converts Anthropic request format to OpenAI format
-func (p *ClaudeCodeCloud) convertAnthropicToOpenAI(claudeReq *ClaudeCodeRequest, targetModel string) map[string]interface{} {
+// forceStream is used when the backend requires streaming (e.g., Fireworks with max_tokens > 4096)
+func (p *ClaudeCodeCloud) convertAnthropicToOpenAI(claudeReq *ClaudeCodeRequest, targetModel string, forceStream bool) map[string]interface{} {
+	stream := claudeReq.Stream || forceStream
 	openaiReq := map[string]interface{}{
 		"model":  targetModel,
-		"stream": claudeReq.Stream,
+		"stream": stream,
 	}
 
 	// Only add non-zero values to avoid parameter validation errors
@@ -616,10 +618,17 @@ func (p *ClaudeCodeCloud) Proxy() http.Handler {
 			return
 		}
 
+		// Fireworks API requires streaming for max_tokens > 4096
+		forceStream := false
+		if modelCfg.Backend == "fireworks" && claudeReq.MaxTokens > 4096 {
+			forceStream = true
+			log.Printf("Claude Code Cloud: forcing streaming for Fireworks (max_tokens=%d > 4096)", claudeReq.MaxTokens)
+		}
+
 		log.Printf("Claude Code Cloud: routing %s -> %s (backend: %s, model: %s)", claudeReq.Model, modelName, modelCfg.Backend, modelCfg.Model)
 
 		// Convert Anthropic request to OpenAI format
-		openaiReq := p.convertAnthropicToOpenAI(&claudeReq, modelCfg.Model)
+		openaiReq := p.convertAnthropicToOpenAI(&claudeReq, modelCfg.Model, forceStream)
 
 		// Create new request body
 		openaiReqBytes, err := json.Marshal(openaiReq)
@@ -632,7 +641,9 @@ func (p *ClaudeCodeCloud) Proxy() http.Handler {
 		}
 
 		// Handle streaming vs non-streaming
-		if claudeReq.Stream {
+		// Use streaming if client requested it OR if backend requires it (forceStream)
+		useStreaming := claudeReq.Stream || forceStream
+		if useStreaming {
 			p.handleStreamingRequest(w, backendURL, apiKey, openaiReqBytes, claudeReq.Model)
 		} else {
 			p.handleNonStreamingRequest(w, backendURL, apiKey, openaiReqBytes, claudeReq.Model)
