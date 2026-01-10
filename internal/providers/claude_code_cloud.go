@@ -1256,6 +1256,12 @@ func (p *ClaudeCodeCloud) RegisterExtraRoutes(router *mux.Router) {
 	router.HandleFunc("/cc/v1/messages/count_tokens", p.handleCountTokens).Methods("POST")
 	// Register the main messages endpoint
 	router.HandleFunc("/cc/v1/messages", p.Proxy().ServeHTTP).Methods("POST")
+
+	// Also register routes for double-/v1 paths
+	// Claude Code appends /v1/messages to ANTHROPIC_BASE_URL which already ends in /v1
+	// So we need to handle /cc/v1/v1/messages as well
+	router.HandleFunc("/cc/v1/v1/messages/count_tokens", p.handleCountTokens).Methods("POST")
+	router.HandleFunc("/cc/v1/v1/messages", p.Proxy().ServeHTTP).Methods("POST")
 }
 
 // ValidateAPIKey validates API key (not required for this provider)
