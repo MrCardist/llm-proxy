@@ -1399,8 +1399,20 @@ func (p *ClaudeCodeCloud) UserIDFromRequest(req *http.Request) string {
 	return ""
 }
 
+// handleEventLogging handles the event logging endpoint (telemetry)
+func (p *ClaudeCodeCloud) handleEventLogging(w http.ResponseWriter, req *http.Request) {
+	// Claude Code sends telemetry events here
+	// We just acknowledge receipt with a success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"success":true}`))
+}
+
 // RegisterExtraRoutes registers additional routes for the provider
 func (p *ClaudeCodeCloud) RegisterExtraRoutes(router *mux.Router) {
+	// Register event logging endpoint (telemetry)
+	router.HandleFunc("/cc/v1/api/event_logging/batch", p.handleEventLogging).Methods("POST")
+
 	// Register count_tokens endpoint first (more specific route)
 	router.HandleFunc("/cc/v1/messages/count_tokens", p.handleCountTokens).Methods("POST")
 	// Register the main messages endpoint
