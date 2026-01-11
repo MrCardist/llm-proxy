@@ -188,6 +188,10 @@ func (c *CollyClient) buildGoogleSearchURL(query string, opts *SearchOptions) (s
 			}
 		}
 
+		// Always request maximum results per page (Google supports up to 100)
+		// This maximizes the number of results we can extract from a single page
+		params.Set("num", "100")
+
 		// Add site filters
 		if len(opts.IncludeDomains) > 0 {
 			siteQuery := ""

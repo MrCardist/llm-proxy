@@ -119,7 +119,7 @@ claude_code_cloud:
     enabled: true
     provider: "colly"
     tool_name: "web_search"  # Name of the tool to inject and handle
-    max_results: 5           # Max results per search
+    max_results: 20          # Max results per search (Google shows up to 100/page)
   models:
     # GLM-4.7 via Fireworks - good general purpose model
     "hc/glm-4.7":
