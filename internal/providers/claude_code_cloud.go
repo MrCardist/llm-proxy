@@ -23,11 +23,11 @@ import (
 // It provides a unified Anthropic-compatible endpoint that routes to various backends
 // (Fireworks, local vLLM, etc.) based on model configuration
 type ClaudeCodeCloud struct {
-	name           string
-	config         *config.ClaudeCodeCloudConfig
-	client         *http.Client
-	thinkTagRegex  *regexp.Regexp
-	webSearchClient *websearch.TavilyClient
+	name            string
+	config          *config.ClaudeCodeCloudConfig
+	client          *http.Client
+	thinkTagRegex   *regexp.Regexp
+	webSearchClient websearch.Client
 }
 
 // NewClaudeCodeCloud creates a new Claude Code cloud provider
@@ -37,14 +37,17 @@ func NewClaudeCodeCloud(cfg *config.ClaudeCodeCloudConfig) *ClaudeCodeCloud {
 	}
 
 	// Initialize web search client if configured
-	var webSearch *websearch.TavilyClient
+	var webSearch websearch.Client
 	if cfg.WebSearch != nil && cfg.WebSearch.Enabled {
-		webSearch = websearch.NewTavilyClient()
-		if webSearch.IsConfigured() {
-			log.Printf("Claude Code Cloud: Web search enabled (provider: %s)", cfg.WebSearch.Provider)
+		// Try Tavily first if API key is configured
+		tavilyClient := websearch.NewTavilyClient()
+		if tavilyClient.IsConfigured() {
+			webSearch = tavilyClient
+			log.Printf("Claude Code Cloud: Web search enabled using Tavily API")
 		} else {
-			log.Printf("Claude Code Cloud: Web search enabled but TAVILY_API_KEY not set")
-			webSearch = nil
+			// Fall back to Colly web scraping
+			webSearch = websearch.NewCollyClient()
+			log.Printf("Claude Code Cloud: Web search enabled using Colly scraper (TAVILY_API_KEY not set)")
 		}
 	}
 
