@@ -44,6 +44,12 @@ func LoggingMiddleware(providerManager *providers.ProviderManager) func(http.Han
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
+			// Normalize double /v1/v1 paths to /v1 for clean logging
+			// This happens when Claude Code appends /v1/messages to ANTHROPIC_BASE_URL ending in /v1
+			if strings.Contains(r.URL.Path, "/v1/v1/") {
+				r.URL.Path = strings.Replace(r.URL.Path, "/v1/v1/", "/v1/", 1)
+			}
+
 			// Detect if this might be a streaming request using the provider manager
 			isStreaming := providerManager.IsStreamingRequest(r)
 

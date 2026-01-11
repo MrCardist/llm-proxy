@@ -52,6 +52,11 @@ func GetProviderFromRequest(providerManager *providers.ProviderManager, req *htt
 func TokenParsingMiddleware(providerManager *providers.ProviderManager, callbacks ...MetadataCallback) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Normalize double /v1/v1 paths to /v1 for clean logging
+			if strings.Contains(r.URL.Path, "/v1/v1/") {
+				r.URL.Path = strings.Replace(r.URL.Path, "/v1/v1/", "/v1/", 1)
+			}
+
 			// Determine which provider this request is for
 			provider := GetProviderFromRequest(providerManager, r)
 
