@@ -114,12 +114,12 @@ multi_provider:
 claude_code_cloud:
   enabled: true
   # Web search configuration - always enabled for all models
-  # Uses Colly web scraper to fetch Google search results (no API key required)
+  # Uses Bing News search which respects count parameter (unlike Google)
   web_search:
     enabled: true
-    provider: "colly"
+    provider: "bing"         # "bing" (recommended) or "colly" (Google News)
     tool_name: "web_search"  # Name of the tool to inject and handle
-    max_results: 20          # Max results per search (Google shows up to 100/page)
+    max_results: 1000        # Max results per search (Bing supports high counts)
   models:
     # GLM-4.7 via Fireworks - good general purpose model
     "hc/glm-4.7":
