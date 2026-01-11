@@ -19,9 +19,17 @@ const (
 // It handles both direct provider paths (/openai/, /anthropic/, /gemini/)
 // and meta paths (/meta/{userID}/openai/, /meta/{userID}/anthropic/, /meta/{userID}/gemini/)
 // It also extracts and stores the user ID in context for later use by other middleware
+// Additionally, it normalizes double /v1/v1 paths to /v1 for clean logging
 func MetaURLRewritingMiddleware(providerManager *providers.ProviderManager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Normalize double /v1/v1 paths to /v1
+			// This happens when Claude Code appends /v1/messages to ANTHROPIC_BASE_URL
+			// which already ends in /v1 (e.g., /cc/v1/v1/messages -> /cc/v1/messages)
+			if strings.Contains(r.URL.Path, "/v1/v1/") {
+				r.URL.Path = strings.Replace(r.URL.Path, "/v1/v1/", "/v1/", 1)
+			}
+
 			// Handle /meta/{userID}/provider/ pattern
 			if strings.HasPrefix(r.URL.Path, "/meta/") {
 				parts := strings.Split(r.URL.Path, "/")
