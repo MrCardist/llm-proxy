@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -778,6 +779,15 @@ func (p *ClaudeCodeCloud) handleForcedStreamingRequest(w http.ResponseWriter, ba
 	var inputTokens, outputTokens int
 	var finishReason string
 
+	// Track accumulated tool_calls (for forced-streaming path)
+	type accumulatedToolCall struct {
+		index     int
+		id        string
+		name      string
+		arguments strings.Builder
+	}
+	toolCalls := make(map[int]*accumulatedToolCall)
+
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -795,8 +805,47 @@ func (p *ClaudeCodeCloud) handleForcedStreamingRequest(w http.ResponseWriter, ba
 				if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
 					if choice, ok := choices[0].(map[string]interface{}); ok {
 						if delta, ok := choice["delta"].(map[string]interface{}); ok {
+							// Accumulate text content
 							if content, ok := delta["content"].(string); ok {
 								contentBuilder.WriteString(content)
+							}
+
+							// Accumulate tool_calls
+							if toolCallsArray, ok := delta["tool_calls"].([]interface{}); ok {
+								for _, tc := range toolCallsArray {
+									toolCall, ok := tc.(map[string]interface{})
+									if !ok {
+										continue
+									}
+
+									// Get tool call index
+									tcIndex := 0
+									if idx, ok := toolCall["index"].(float64); ok {
+										tcIndex = int(idx)
+									}
+
+									// Get or create tool call state
+									tcState, exists := toolCalls[tcIndex]
+									if !exists {
+										tcState = &accumulatedToolCall{index: tcIndex}
+										toolCalls[tcIndex] = tcState
+									}
+
+									// Accumulate ID
+									if id, ok := toolCall["id"].(string); ok && id != "" {
+										tcState.id = id
+									}
+
+									// Accumulate function details
+									if function, ok := toolCall["function"].(map[string]interface{}); ok {
+										if name, ok := function["name"].(string); ok && name != "" {
+											tcState.name = name
+										}
+										if arguments, ok := function["arguments"].(string); ok {
+											tcState.arguments.WriteString(arguments)
+										}
+									}
+								}
 							}
 						}
 						if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
@@ -830,16 +879,51 @@ func (p *ClaudeCodeCloud) handleForcedStreamingRequest(w http.ResponseWriter, ba
 		Content: p.parseThinkTagsToBlocks(fullContent),
 	}
 
-	// Set stop reason
-	switch finishReason {
-	case "stop":
-		claudeResp.StopReason = "end_turn"
-	case "length":
-		claudeResp.StopReason = "max_tokens"
-	case "tool_calls":
+	// Convert accumulated tool_calls to tool_use blocks
+	// Sort by index to maintain order
+	var sortedIndices []int
+	for idx := range toolCalls {
+		sortedIndices = append(sortedIndices, idx)
+	}
+	sort.Ints(sortedIndices)
+
+	for _, idx := range sortedIndices {
+		tcState := toolCalls[idx]
+		if tcState.name == "" {
+			// Skip incomplete tool calls
+			continue
+		}
+
+		// Build tool_call in OpenAI format for conversion
+		toolCallMap := map[string]interface{}{
+			"id": tcState.id,
+			"function": map[string]interface{}{
+				"name":      tcState.name,
+				"arguments": tcState.arguments.String(),
+			},
+		}
+
+		// Convert to tool_use block using existing helper
+		toolUseBlock := p.convertToolCallToToolUse(toolCallMap)
+		if toolUseBlock != nil {
+			claudeResp.Content = append(claudeResp.Content, *toolUseBlock)
+		}
+	}
+
+	// Set stop reason - check for tool_calls presence
+	if len(toolCalls) > 0 {
 		claudeResp.StopReason = "tool_use"
-	default:
-		claudeResp.StopReason = "end_turn"
+	} else {
+		switch finishReason {
+		case "stop":
+			claudeResp.StopReason = "end_turn"
+		case "length":
+			claudeResp.StopReason = "max_tokens"
+		case "tool_calls":
+			claudeResp.StopReason = "tool_use"
+		default:
+			claudeResp.StopReason = "end_turn"
+		}
 	}
 
 	claudeResp.Usage.InputTokens = inputTokens
@@ -1413,20 +1497,11 @@ func (p *ClaudeCodeCloud) handleEventLogging(w http.ResponseWriter, req *http.Re
 }
 
 // RegisterExtraRoutes registers additional routes for the provider
+// Note: We only register single /v1 routes. Double /v1/v1 paths are normalized
+// by MetaURLRewritingMiddleware which runs before the PathPrefix catch-all.
 func (p *ClaudeCodeCloud) RegisterExtraRoutes(router *mux.Router) {
-	// Register event logging endpoint (telemetry)
-	router.HandleFunc("/cc/v1/api/event_logging/batch", p.handleEventLogging).Methods("POST")
-
-	// Register count_tokens endpoint first (more specific route)
-	router.HandleFunc("/cc/v1/messages/count_tokens", p.handleCountTokens).Methods("POST")
-	// Register the main messages endpoint
-	router.HandleFunc("/cc/v1/messages", p.Proxy().ServeHTTP).Methods("POST")
-
-	// Also register routes for double-/v1 paths
-	// Claude Code appends /v1/messages to ANTHROPIC_BASE_URL which already ends in /v1
-	// So we need to handle /cc/v1/v1/messages as well
-	router.HandleFunc("/cc/v1/v1/messages/count_tokens", p.handleCountTokens).Methods("POST")
-	router.HandleFunc("/cc/v1/v1/messages", p.Proxy().ServeHTTP).Methods("POST")
+	// Don't register explicit routes here - let the PathPrefix catch-all handle everything
+	// This ensures the middleware chain runs properly for URL normalization
 }
 
 // ValidateAPIKey validates API key (not required for this provider)
