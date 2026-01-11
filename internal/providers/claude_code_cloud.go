@@ -1028,6 +1028,12 @@ func (p *ClaudeCodeCloud) createAnthropicError(errorType, message string, status
 // Proxy returns the HTTP handler for this provider
 func (p *ClaudeCodeCloud) Proxy() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Check for event_logging endpoint (telemetry) - handle before any request parsing
+		if strings.Contains(req.URL.Path, "/event_logging/") {
+			p.handleEventLogging(w, req)
+			return
+		}
+
 		// Check for count_tokens endpoint
 		if strings.HasSuffix(req.URL.Path, "/count_tokens") {
 			p.handleCountTokens(w, req)
@@ -1560,6 +1566,11 @@ func (p *ClaudeCodeCloud) handleStreamingRequest(w http.ResponseWriter, backendU
 					"type": "message_stop",
 				})
 				flushContent()
+
+				// Debug logging for stop_reason and content length
+				contentLen := contentBuffer.Len()
+				log.Printf("Claude Code Cloud: Stream completed - stop_reason=%s, content_length=%d, thinking_length=%d, tool_calls=%d",
+					finishReason, contentLen, thinkingBuffer.Len(), len(toolCalls))
 				break
 			}
 
