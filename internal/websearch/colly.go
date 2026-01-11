@@ -31,20 +31,44 @@ func (c *CollyClient) IsConfigured() bool {
 
 // Search performs a web search by scraping Google search results
 func (c *CollyClient) Search(query string, opts *SearchOptions) (*SearchResult, error) {
+	// Always use news search mode to avoid bot detection on regular search
+	// Google serves static HTML for news, but requires JS for regular search
+	if opts == nil {
+		opts = &SearchOptions{}
+	}
+	if !opts.Advanced {
+		opts.Advanced = true // Enable news mode
+		// Set default time window based on query keywords
+		if opts.Days == 0 {
+			queryLower := strings.ToLower(query)
+			if strings.Contains(queryLower, "news") ||
+				strings.Contains(queryLower, "recent") ||
+				strings.Contains(queryLower, "latest") ||
+				strings.Contains(queryLower, "today") {
+				opts.Days = 7 // Short window for news queries
+			} else {
+				opts.Days = 90 // Longer window for general queries
+			}
+		}
+	}
+
 	// Build Google search URL
 	searchURL, err := c.buildGoogleSearchURL(query, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build search URL: %w", err)
 	}
 
-	log.Printf("Colly: Scraping Google search: %s", searchURL)
+	log.Printf("Colly: Scraping Google News: %s (days=%d)", searchURL, opts.Days)
 
-	// Create collector
+	// Create collector with more realistic browser headers
 	collector := colly.NewCollector(
 		colly.UserAgent(c.userAgent),
 		colly.AllowURLRevisit(),
 	)
 	collector.SetRequestTimeout(c.timeout)
+
+	// Note: Extra headers via OnRequest were found to break Colly callbacks
+	// The default UserAgent set above is sufficient for news searches
 
 	result := &SearchResult{
 		Query:   query,
@@ -53,15 +77,8 @@ func (c *CollyClient) Search(query string, opts *SearchOptions) (*SearchResult, 
 
 	// Try multiple selectors for Google search results (they change frequently)
 	// News results typically use different containers
-	selectors := []string{
-		"div.Gx5Zad.xpd.EtOod.pkphOe", // News article container (2024+)
-		"div.SoaBEf",                   // Another news container
-		"div.g",                        // Traditional search result
-		"article",                      // News articles
-	}
-
-	for _, selector := range selectors {
-		collector.OnHTML(selector, func(e *colly.HTMLElement) {
+	// Register all callbacks directly to avoid Go closure issues with loops
+	processResult := func(e *colly.HTMLElement) {
 			// Try multiple ways to extract title
 			title := ""
 			titleSelectors := []string{"h3", "div[role='heading']", ".mCBkyc", ".n0jPhd"}
@@ -119,8 +136,13 @@ func (c *CollyClient) Search(query string, opts *SearchOptions) (*SearchResult, 
 					})
 				}
 			}
-		})
 	}
+
+	// Register the callback for multiple selectors
+	collector.OnHTML("div.Gx5Zad.xpd.EtOod.pkphOe", processResult) // News article container (2024+)
+	collector.OnHTML("div.SoaBEf", processResult)                   // Another news container
+	collector.OnHTML("div.g", processResult)                        // Traditional search result
+	collector.OnHTML("article", processResult)                      // News articles
 
 	// Handle errors
 	collector.OnError(func(r *colly.Response, err error) {
