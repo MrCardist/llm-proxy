@@ -113,6 +113,13 @@ multi_provider:
 # and configure models like "hc/glm-4.7" in ~/.claude/settings.json
 claude_code_cloud:
   enabled: true
+  # Web search configuration - enables proxy-side web search for models without native search
+  # Requires TAVILY_API_KEY environment variable to be set
+  web_search:
+    enabled: ${ENABLE_WEB_SEARCH:-false}
+    provider: "tavily"
+    tool_name: "web_search"  # Name of the tool to inject and handle
+    max_results: 5           # Max results per search
   models:
     # GLM-4.7 via Fireworks - good general purpose model
     "hc/glm-4.7":

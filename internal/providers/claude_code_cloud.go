@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Instawork/llm-proxy/internal/config"
+	"github.com/Instawork/llm-proxy/internal/websearch"
 	"github.com/gorilla/mux"
 )
 
@@ -22,10 +23,11 @@ import (
 // It provides a unified Anthropic-compatible endpoint that routes to various backends
 // (Fireworks, local vLLM, etc.) based on model configuration
 type ClaudeCodeCloud struct {
-	name          string
-	config        *config.ClaudeCodeCloudConfig
-	client        *http.Client
-	thinkTagRegex *regexp.Regexp
+	name           string
+	config         *config.ClaudeCodeCloudConfig
+	client         *http.Client
+	thinkTagRegex  *regexp.Regexp
+	webSearchClient *websearch.TavilyClient
 }
 
 // NewClaudeCodeCloud creates a new Claude Code cloud provider
@@ -34,11 +36,24 @@ func NewClaudeCodeCloud(cfg *config.ClaudeCodeCloudConfig) *ClaudeCodeCloud {
 		Timeout: 300 * time.Second, // Longer timeout for cloud APIs
 	}
 
+	// Initialize web search client if configured
+	var webSearch *websearch.TavilyClient
+	if cfg.WebSearch != nil && cfg.WebSearch.Enabled {
+		webSearch = websearch.NewTavilyClient()
+		if webSearch.IsConfigured() {
+			log.Printf("Claude Code Cloud: Web search enabled (provider: %s)", cfg.WebSearch.Provider)
+		} else {
+			log.Printf("Claude Code Cloud: Web search enabled but TAVILY_API_KEY not set")
+			webSearch = nil
+		}
+	}
+
 	return &ClaudeCodeCloud{
-		name:          "cc",
-		config:        cfg,
-		client:        client,
-		thinkTagRegex: regexp.MustCompile(`<think>(.*?)</think>`),
+		name:            "cc",
+		config:          cfg,
+		client:          client,
+		thinkTagRegex:   regexp.MustCompile(`<think>(.*?)</think>`),
+		webSearchClient: webSearch,
 	}
 }
 
@@ -558,6 +573,285 @@ func (p *ClaudeCodeCloud) convertToolCallToToolUse(toolCall map[string]interface
 	}
 }
 
+// isWebSearchEnabled checks if web search is enabled and configured
+func (p *ClaudeCodeCloud) isWebSearchEnabled() bool {
+	return p.webSearchClient != nil && p.config.WebSearch != nil && p.config.WebSearch.Enabled
+}
+
+// getWebSearchToolName returns the tool name to use for web search
+func (p *ClaudeCodeCloud) getWebSearchToolName() string {
+	if p.config.WebSearch != nil && p.config.WebSearch.ToolName != "" {
+		return p.config.WebSearch.ToolName
+	}
+	return "web_search"
+}
+
+// hasWebSearchTool checks if the web_search tool is already present in the request
+func (p *ClaudeCodeCloud) hasWebSearchTool(tools interface{}) bool {
+	toolsArray, ok := tools.([]interface{})
+	if !ok {
+		return false
+	}
+
+	toolName := p.getWebSearchToolName()
+	for _, tool := range toolsArray {
+		if toolMap, ok := tool.(map[string]interface{}); ok {
+			if name, ok := toolMap["name"].(string); ok && name == toolName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// getWebSearchToolDefinition returns the web_search tool definition in Anthropic format
+func (p *ClaudeCodeCloud) getWebSearchToolDefinition() map[string]interface{} {
+	return map[string]interface{}{
+		"name":        p.getWebSearchToolName(),
+		"description": "Search the web for information. Use this tool when you need to find current information, news, or any data that might not be in your training data. Returns search results with titles, URLs, and content snippets.",
+		"input_schema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "The search query to look up",
+				},
+			},
+			"required": []string{"query"},
+		},
+	}
+}
+
+// executeWebSearch performs a web search using the configured provider
+func (p *ClaudeCodeCloud) executeWebSearch(query string) (string, error) {
+	if p.webSearchClient == nil {
+		return "", fmt.Errorf("web search client not configured")
+	}
+
+	// Build search options from config
+	opts := &websearch.SearchOptions{}
+	if p.config.WebSearch != nil {
+		if p.config.WebSearch.MaxResults > 0 {
+			opts.MaxResults = p.config.WebSearch.MaxResults
+		}
+		opts.IncludeDomains = p.config.WebSearch.IncludeDomains
+		opts.ExcludeDomains = p.config.WebSearch.ExcludeDomains
+	}
+
+	// Detect news-related queries and apply time filter
+	queryLower := strings.ToLower(query)
+	if strings.Contains(queryLower, "news") ||
+		strings.Contains(queryLower, "recent") ||
+		strings.Contains(queryLower, "latest") ||
+		strings.Contains(queryLower, "today") {
+		// Use advanced search for news queries
+		opts.Advanced = true
+		// Default to last 7 days for news queries, or 30 days if "month" is mentioned
+		if strings.Contains(queryLower, "month") || strings.Contains(queryLower, "30 days") {
+			opts.Days = 30
+		} else if strings.Contains(queryLower, "week") || strings.Contains(queryLower, "7 days") {
+			opts.Days = 7
+		} else {
+			opts.Days = 7 // Default for news queries
+		}
+		log.Printf("Claude Code Cloud: Detected news query, using advanced search with %d days filter", opts.Days)
+	}
+
+	log.Printf("Claude Code Cloud: Executing web search for query: %s", query)
+	result, err := p.webSearchClient.Search(query, opts)
+	if err != nil {
+		return "", fmt.Errorf("web search failed: %w", err)
+	}
+
+	return result.FormatAsText(), nil
+}
+
+// injectWebSearchTool adds web_search tool to the request if not already present
+func (p *ClaudeCodeCloud) injectWebSearchTool(claudeReq *ClaudeCodeRequest) {
+	if !p.isWebSearchEnabled() {
+		return
+	}
+
+	// Skip if web_search tool is already present
+	if p.hasWebSearchTool(claudeReq.Tools) {
+		return
+	}
+
+	// Add web_search tool to the tools array
+	toolDef := p.getWebSearchToolDefinition()
+
+	if claudeReq.Tools == nil {
+		claudeReq.Tools = []interface{}{toolDef}
+	} else if toolsArray, ok := claudeReq.Tools.([]interface{}); ok {
+		claudeReq.Tools = append(toolsArray, toolDef)
+	}
+
+	log.Printf("Claude Code Cloud: Injected web_search tool into request")
+}
+
+// extractWebSearchToolUse extracts web_search tool_use from a Claude response
+// Returns the tool_use block, its index, and whether it was found
+func (p *ClaudeCodeCloud) extractWebSearchToolUse(resp *ClaudeResponse) (*ClaudeContentBlock, int, bool) {
+	if !p.isWebSearchEnabled() {
+		return nil, -1, false
+	}
+
+	toolName := p.getWebSearchToolName()
+	for i, block := range resp.Content {
+		if block.Type == "tool_use" && block.Name == toolName {
+			return &block, i, true
+		}
+	}
+	return nil, -1, false
+}
+
+// handleWebSearchToolUse executes web search and continues the conversation
+// Returns the final response after handling all web search requests
+func (p *ClaudeCodeCloud) handleWebSearchToolUse(
+	initialResp *ClaudeResponse,
+	openaiReq map[string]interface{},
+	backendURL, apiKey, requestedModel string,
+	maxIterations int,
+) (*ClaudeResponse, error) {
+
+	currentResp := initialResp
+	messages := openaiReq["messages"].([]map[string]interface{})
+
+	for i := 0; i < maxIterations; i++ {
+		// Check for web_search tool_use
+		toolUse, _, found := p.extractWebSearchToolUse(currentResp)
+		if !found {
+			// No more web_search calls, return current response
+			return currentResp, nil
+		}
+
+		// Extract query from tool_use input
+		query := ""
+		if toolUse.Input != nil {
+			if q, ok := toolUse.Input["query"].(string); ok {
+				query = q
+			}
+		}
+
+		if query == "" {
+			log.Printf("Claude Code Cloud: web_search tool_use has no query, skipping")
+			return currentResp, nil
+		}
+
+		// Execute web search
+		searchResult, err := p.executeWebSearch(query)
+		if err != nil {
+			log.Printf("Claude Code Cloud: web search error: %v", err)
+			searchResult = fmt.Sprintf("Web search failed: %v", err)
+		}
+
+		log.Printf("Claude Code Cloud: web search completed for query: %s (result length: %d)", query, len(searchResult))
+
+		// Build assistant message with the tool_use
+		assistantContent := []map[string]interface{}{}
+		for _, block := range currentResp.Content {
+			if block.Type == "text" && block.Text != "" {
+				assistantContent = append(assistantContent, map[string]interface{}{
+					"type": "text",
+					"text": block.Text,
+				})
+			} else if block.Type == "tool_use" {
+				assistantContent = append(assistantContent, map[string]interface{}{
+					"type": "tool_use",
+					"id":   block.ID,
+					"name": block.Name,
+					"input": block.Input,
+				})
+			}
+		}
+
+		// Add assistant message with tool_use to messages
+		assistantMsg := map[string]interface{}{
+			"role": "assistant",
+		}
+		if len(assistantContent) > 0 {
+			// Convert to OpenAI format
+			var toolCalls []map[string]interface{}
+			var textContent string
+			for _, c := range assistantContent {
+				if c["type"] == "tool_use" {
+					inputJSON, _ := json.Marshal(c["input"])
+					toolCalls = append(toolCalls, map[string]interface{}{
+						"id":   c["id"],
+						"type": "function",
+						"function": map[string]interface{}{
+							"name":      c["name"],
+							"arguments": string(inputJSON),
+						},
+					})
+				} else if c["type"] == "text" {
+					textContent = c["text"].(string)
+				}
+			}
+			if textContent != "" {
+				assistantMsg["content"] = textContent
+			}
+			if len(toolCalls) > 0 {
+				assistantMsg["tool_calls"] = toolCalls
+				if textContent == "" {
+					assistantMsg["content"] = nil
+				}
+			}
+		}
+		messages = append(messages, assistantMsg)
+
+		// Add tool result message
+		toolResultMsg := map[string]interface{}{
+			"role":         "tool",
+			"tool_call_id": toolUse.ID,
+			"content":      searchResult,
+		}
+		messages = append(messages, toolResultMsg)
+
+		// Update the request and make another call
+		openaiReq["messages"] = messages
+		reqBytes, _ := json.Marshal(openaiReq)
+
+		req, err := http.NewRequest("POST", backendURL, bytes.NewBuffer(reqBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create follow-up request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		resp, err := p.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("follow-up request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read follow-up response: %w", err)
+		}
+
+		var openaiResp map[string]interface{}
+		if err := json.Unmarshal(respBody, &openaiResp); err != nil {
+			return nil, fmt.Errorf("invalid follow-up response: %w", err)
+		}
+
+		// Check for errors
+		if errorObj, ok := openaiResp["error"].(map[string]interface{}); ok {
+			errorMsg := "Backend error"
+			if msg, ok := errorObj["message"].(string); ok {
+				errorMsg = msg
+			}
+			return nil, fmt.Errorf("backend error: %s", errorMsg)
+		}
+
+		// Convert response
+		currentResp = p.convertOpenAIToAnthropic(openaiResp, requestedModel)
+	}
+
+	log.Printf("Claude Code Cloud: max web search iterations (%d) reached", maxIterations)
+	return currentResp, nil
+}
+
 // createAnthropicError creates an error in Anthropic format
 func (p *ClaudeCodeCloud) createAnthropicError(errorType, message string, statusCode int) ([]byte, int) {
 	anthropicErr := AnthropicError{
@@ -599,6 +893,9 @@ func (p *ClaudeCodeCloud) Proxy() http.Handler {
 			w.Write(errorBytes)
 			return
 		}
+
+		// Inject web_search tool if web search is enabled
+		p.injectWebSearchTool(&claudeReq)
 
 		// Look up model configuration
 		modelCfg, modelName := p.getModelConfig(claudeReq.Model)
@@ -738,6 +1035,23 @@ func (p *ClaudeCodeCloud) handleNonStreamingRequest(w http.ResponseWriter, backe
 
 	// Convert OpenAI response to Anthropic format
 	anthropicResp := p.convertOpenAIToAnthropic(openaiResp, requestedModel)
+
+	// Handle web_search tool_use if web search is enabled
+	if p.isWebSearchEnabled() {
+		if _, _, found := p.extractWebSearchToolUse(anthropicResp); found {
+			// Parse the original request to get the openaiReq map for the agentic loop
+			var openaiReq map[string]interface{}
+			if err := json.Unmarshal(requestBody, &openaiReq); err == nil {
+				finalResp, err := p.handleWebSearchToolUse(anthropicResp, openaiReq, backendURL, apiKey, requestedModel, 5)
+				if err != nil {
+					log.Printf("Claude Code Cloud: web search handling error: %v", err)
+					// Fall back to returning the original response with the tool_use
+				} else {
+					anthropicResp = finalResp
+				}
+			}
+		}
+	}
 
 	// Return Anthropic response
 	w.Header().Set("Content-Type", "application/json")
@@ -928,6 +1242,23 @@ func (p *ClaudeCodeCloud) handleForcedStreamingRequest(w http.ResponseWriter, ba
 
 	claudeResp.Usage.InputTokens = inputTokens
 	claudeResp.Usage.OutputTokens = outputTokens
+
+	// Handle web_search tool_use if web search is enabled
+	if p.isWebSearchEnabled() {
+		if _, _, found := p.extractWebSearchToolUse(claudeResp); found {
+			// Parse the original request to get the openaiReq map for the agentic loop
+			var openaiReq map[string]interface{}
+			if err := json.Unmarshal(requestBody, &openaiReq); err == nil {
+				finalResp, err := p.handleWebSearchToolUse(claudeResp, openaiReq, backendURL, apiKey, requestedModel, 5)
+				if err != nil {
+					log.Printf("Claude Code Cloud: web search handling error: %v", err)
+					// Fall back to returning the original response with the tool_use
+				} else {
+					claudeResp = finalResp
+				}
+			}
+		}
+	}
 
 	// Return as JSON response
 	w.Header().Set("Content-Type", "application/json")

@@ -251,8 +251,19 @@ type MultiBackendConfig struct {
 
 // ClaudeCodeCloudConfig represents configuration for the /cc endpoint (Claude Code cloud proxy)
 type ClaudeCodeCloudConfig struct {
-	Enabled bool                          `yaml:"enabled"`
-	Models  map[string]CCCloudModelConfig `yaml:"models"` // Model configurations keyed by local name (e.g., "hc/glm-4.7")
+	Enabled   bool                          `yaml:"enabled"`
+	Models    map[string]CCCloudModelConfig `yaml:"models"`     // Model configurations keyed by local name (e.g., "hc/glm-4.7")
+	WebSearch *WebSearchConfig              `yaml:"web_search"` // Optional web search configuration
+}
+
+// WebSearchConfig represents configuration for proxy-side web search
+type WebSearchConfig struct {
+	Enabled        bool     `yaml:"enabled"`                    // Enable web search interception
+	Provider       string   `yaml:"provider"`                   // Search provider: "tavily" (default)
+	ToolName       string   `yaml:"tool_name,omitempty"`        // Tool name to intercept (default: "web_search")
+	MaxResults     int      `yaml:"max_results,omitempty"`      // Max results per search (default: 5)
+	IncludeDomains []string `yaml:"include_domains,omitempty"`  // Only search these domains
+	ExcludeDomains []string `yaml:"exclude_domains,omitempty"`  // Exclude these domains
 }
 
 // CCCloudModelConfig represents configuration for a single model in Claude Code cloud
