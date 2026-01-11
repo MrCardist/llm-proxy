@@ -19,7 +19,7 @@ type CollyClient struct {
 // NewCollyClient creates a new Colly-based web scraping client
 func NewCollyClient() *CollyClient {
 	return &CollyClient{
-		userAgent: "Mozilla/5.0 (compatible; LLMProxy/1.0)",
+		userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		timeout:   30 * time.Second,
 	}
 }
@@ -51,29 +51,76 @@ func (c *CollyClient) Search(query string, opts *SearchOptions) (*SearchResult, 
 		Results: []SearchResultItem{},
 	}
 
-	// Parse search results
-	collector.OnHTML("div.g", func(e *colly.HTMLElement) {
-		title := e.ChildText("h3")
-		link := e.ChildAttr("a", "href")
-		snippet := e.ChildText("div.VwiC3b")
+	// Try multiple selectors for Google search results (they change frequently)
+	// News results typically use different containers
+	selectors := []string{
+		"div.Gx5Zad.xpd.EtOod.pkphOe", // News article container (2024+)
+		"div.SoaBEf",                   // Another news container
+		"div.g",                        // Traditional search result
+		"article",                      // News articles
+	}
 
-		// Clean up the link (remove Google redirect)
-		if strings.HasPrefix(link, "/url?q=") {
-			parsedURL, err := url.Parse(link)
-			if err == nil {
-				link = parsedURL.Query().Get("q")
+	for _, selector := range selectors {
+		collector.OnHTML(selector, func(e *colly.HTMLElement) {
+			// Try multiple ways to extract title
+			title := ""
+			titleSelectors := []string{"h3", "div[role='heading']", ".mCBkyc", ".n0jPhd"}
+			for _, ts := range titleSelectors {
+				title = e.ChildText(ts)
+				if title != "" {
+					break
+				}
 			}
-		}
 
-		if title != "" && link != "" {
-			result.Results = append(result.Results, SearchResultItem{
-				Title:   title,
-				URL:     link,
-				Content: snippet,
-				Score:   0.0,
-			})
-		}
-	})
+			// Try multiple ways to extract link
+			link := ""
+			linkSelectors := []string{"a[href]", "a"}
+			for _, ls := range linkSelectors {
+				link = e.ChildAttr(ls, "href")
+				if link != "" && !strings.HasPrefix(link, "#") {
+					break
+				}
+			}
+
+			// Try multiple ways to extract snippet/content
+			snippet := ""
+			snippetSelectors := []string{".VwiC3b", ".Y3v8qd", ".GI74Re", ".st"}
+			for _, ss := range snippetSelectors {
+				snippet = e.ChildText(ss)
+				if snippet != "" {
+					break
+				}
+			}
+
+			// Clean up the link (remove Google redirect)
+			if strings.HasPrefix(link, "/url?q=") {
+				if parsedURL, err := url.Parse(link); err == nil {
+					link = parsedURL.Query().Get("q")
+				}
+			}
+
+			// Only add if we have at least title and link
+			if title != "" && link != "" && !strings.HasPrefix(link, "/search") {
+				// Check for duplicates
+				isDuplicate := false
+				for _, existing := range result.Results {
+					if existing.URL == link {
+						isDuplicate = true
+						break
+					}
+				}
+
+				if !isDuplicate {
+					result.Results = append(result.Results, SearchResultItem{
+						Title:   strings.TrimSpace(title),
+						URL:     link,
+						Content: strings.TrimSpace(snippet),
+						Score:   0.0,
+					})
+				}
+			}
+		})
+	}
 
 	// Handle errors
 	collector.OnError(func(r *colly.Response, err error) {
