@@ -666,6 +666,165 @@ func (p *ClaudeCodeCloud) executeWebSearch(query string) (string, error) {
 	return result.FormatAsText(), nil
 }
 
+// parseGoogleSearchURL extracts search parameters from a Google search URL
+// Returns query, isNews, days (0 if not specified), and whether it's a valid Google search URL
+func (p *ClaudeCodeCloud) parseGoogleSearchURL(url string) (query string, isNews bool, days int, ok bool) {
+	// Check if it's a Google search URL
+	if !strings.Contains(url, "google.com/search") {
+		return "", false, 0, false
+	}
+
+	// Parse the URL to extract query parameters
+	// Example: https://www.google.com/search?q=nvidia&tbm=nws&tbs=qdr:d30
+
+	// Extract q parameter (search query)
+	qIdx := strings.Index(url, "q=")
+	if qIdx == -1 {
+		return "", false, 0, false
+	}
+
+	queryStart := qIdx + 2
+	queryEnd := len(url)
+	for i := queryStart; i < len(url); i++ {
+		if url[i] == '&' {
+			queryEnd = i
+			break
+		}
+	}
+	query = url[queryStart:queryEnd]
+	// URL decode the query (basic: replace + with space, %20 with space)
+	query = strings.ReplaceAll(query, "+", " ")
+	query = strings.ReplaceAll(query, "%20", " ")
+
+	// Check for tbm=nws (news search)
+	isNews = strings.Contains(url, "tbm=nws")
+
+	// Check for time range: tbs=qdr:dX (last X days)
+	// qdr:d = past 24 hours, qdr:w = past week, qdr:m = past month
+	// qdr:d30 = past 30 days (custom)
+	if strings.Contains(url, "tbs=qdr:") {
+		tbsIdx := strings.Index(url, "tbs=qdr:")
+		if tbsIdx != -1 {
+			timeSpec := url[tbsIdx+8:]
+			// Find end of parameter
+			endIdx := strings.Index(timeSpec, "&")
+			if endIdx != -1 {
+				timeSpec = timeSpec[:endIdx]
+			}
+
+			switch {
+			case timeSpec == "d" || timeSpec == "d1":
+				days = 1
+			case timeSpec == "w":
+				days = 7
+			case timeSpec == "m":
+				days = 30
+			case strings.HasPrefix(timeSpec, "d"):
+				// Parse custom days like d30
+				fmt.Sscanf(timeSpec, "d%d", &days)
+			}
+		}
+	}
+
+	return query, isNews, days, true
+}
+
+// processGoogleSearchURLs detects Google search URLs in user messages and replaces them with search results
+func (p *ClaudeCodeCloud) processGoogleSearchURLs(claudeReq *ClaudeCodeRequest) {
+	if !p.isWebSearchEnabled() {
+		return
+	}
+
+	// Process each message looking for Google search URLs
+	for i, msg := range claudeReq.Messages {
+		if msg.Role != "user" {
+			continue
+		}
+
+		// Handle string content
+		if contentStr, ok := msg.Content.(string); ok {
+			processedContent := p.replaceGoogleURLsInText(contentStr)
+			if processedContent != contentStr {
+				claudeReq.Messages[i].Content = processedContent
+			}
+			continue
+		}
+
+		// Handle array of content blocks
+		contentArray, ok := msg.Content.([]interface{})
+		if !ok {
+			continue
+		}
+
+		for j, block := range contentArray {
+			blockMap, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			if blockMap["type"] == "text" {
+				if text, ok := blockMap["text"].(string); ok {
+					processedText := p.replaceGoogleURLsInText(text)
+					if processedText != text {
+						blockMap["text"] = processedText
+						contentArray[j] = blockMap
+					}
+				}
+			}
+		}
+		claudeReq.Messages[i].Content = contentArray
+	}
+}
+
+// replaceGoogleURLsInText finds Google search URLs in text and replaces them with search results
+func (p *ClaudeCodeCloud) replaceGoogleURLsInText(text string) string {
+	// Simple pattern matching for Google search URLs
+	// Look for https://www.google.com/search or http://www.google.com/search
+
+	result := text
+
+	// Find all potential URLs
+	words := strings.Fields(text)
+	for _, word := range words {
+		// Clean up the word (remove trailing punctuation)
+		cleanWord := strings.TrimRight(word, ".,;:!?")
+
+		query, isNews, days, ok := p.parseGoogleSearchURL(cleanWord)
+		if !ok {
+			continue
+		}
+
+		log.Printf("Claude Code Cloud: Detected Google search URL - query: %s, isNews: %v, days: %d", query, isNews, days)
+
+		// Execute the search
+		opts := &websearch.SearchOptions{
+			Advanced: isNews, // Use advanced search for news
+		}
+		if days > 0 {
+			opts.Days = days
+		} else if isNews {
+			opts.Days = 7 // Default for news
+		}
+		if p.config.WebSearch != nil && p.config.WebSearch.MaxResults > 0 {
+			opts.MaxResults = p.config.WebSearch.MaxResults
+		}
+
+		searchResult, err := p.webSearchClient.Search(query, opts)
+		if err != nil {
+			log.Printf("Claude Code Cloud: Failed to execute search for Google URL: %v", err)
+			continue
+		}
+
+		// Replace the URL with the search results
+		replacement := fmt.Sprintf("\n\n[Search results for '%s']\n%s\n", query, searchResult.FormatAsText())
+		result = strings.Replace(result, cleanWord, replacement, 1)
+
+		log.Printf("Claude Code Cloud: Replaced Google URL with %d search results", len(searchResult.Results))
+	}
+
+	return result
+}
+
 // injectWebSearchTool adds web_search tool to the request if not already present
 func (p *ClaudeCodeCloud) injectWebSearchTool(claudeReq *ClaudeCodeRequest) {
 	if !p.isWebSearchEnabled() {
@@ -893,6 +1052,9 @@ func (p *ClaudeCodeCloud) Proxy() http.Handler {
 			w.Write(errorBytes)
 			return
 		}
+
+		// Process Google search URLs in user messages (replace with actual search results)
+		p.processGoogleSearchURLs(&claudeReq)
 
 		// Inject web_search tool if web search is enabled
 		p.injectWebSearchTool(&claudeReq)
