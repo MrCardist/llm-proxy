@@ -39,16 +39,9 @@ func NewClaudeCodeCloud(cfg *config.ClaudeCodeCloudConfig) *ClaudeCodeCloud {
 	// Initialize web search client if configured
 	var webSearch websearch.Client
 	if cfg.WebSearch != nil && cfg.WebSearch.Enabled {
-		// Try Tavily first if API key is configured
-		tavilyClient := websearch.NewTavilyClient()
-		if tavilyClient.IsConfigured() {
-			webSearch = tavilyClient
-			log.Printf("Claude Code Cloud: Web search enabled using Tavily API")
-		} else {
-			// Fall back to Colly web scraping
-			webSearch = websearch.NewCollyClient()
-			log.Printf("Claude Code Cloud: Web search enabled using Colly scraper (TAVILY_API_KEY not set)")
-		}
+		// Use Colly web scraper for all web searches
+		webSearch = websearch.NewCollyClient()
+		log.Printf("Claude Code Cloud: Web search enabled using Colly scraper")
 	}
 
 	return &ClaudeCodeCloud{

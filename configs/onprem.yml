@@ -114,10 +114,10 @@ multi_provider:
 claude_code_cloud:
   enabled: true
   # Web search configuration - enables proxy-side web search for models without native search
-  # Requires TAVILY_API_KEY environment variable to be set
+  # Uses Colly web scraper to fetch Google search results (no API key required)
   web_search:
     enabled: ${ENABLE_WEB_SEARCH:-false}
-    provider: "tavily"
+    provider: "colly"
     tool_name: "web_search"  # Name of the tool to inject and handle
     max_results: 5           # Max results per search
   models:
