@@ -21,13 +21,26 @@ This fork adds enterprise-grade features for hybrid cloud/on-premises deployment
   - Latency and queue depth thresholds
   - Request format transformation (OpenAI ↔ Anthropic)
   - Model aliasing support
-- **Claude Code Cloud (`/cc/*`)**: Production Anthropic-compatible endpoint for open-source models
-  - Supports Fireworks AI, local vLLM, and other OpenAI-compatible backends
+- **Claude Code Cloud (`/cc/v1/*`)**: ⭐ Production Anthropic-compatible endpoint for open-source models
+  - Generic endpoint supporting multiple backends (Fireworks AI, local vLLM, OpenAI-compatible)
   - Model mapping: `hc/glm-4.7` → Fireworks `accounts/fireworks/models/glm-4p7`
-  - Seamless switching between cloud and on-prem backends
-  - Full streaming and tool use support
+  - Full Anthropic Messages API compatibility
+  - Streaming and tool use with automatic web search injection
+  - Built-in web search for models lacking native search
+  - Usage tracking and token counting endpoints
+  - Event logging support for telemetry
 - **Claude Code Proxy (`/cc-qwen/*`)**: Anthropic API format → OpenAI format converter for local models
   - Enables Claude Code compatibility with local Qwen models
+  - Format conversion with parameter mapping
+- **Web Search Integration** ⭐: Intelligent proxy-side search for all models
+  - **Technology**: [Colly](https://go-colly.org) web scraper for paginated Bing searches
+  - **No API Keys**: Pure web scraping - zero external dependencies
+  - **Dual Mode**: Regular Bing (default) + Bing News (auto-detected for news queries)
+  - **Agentic Loop**: Tool injection → LLM tool use → Search execution → Result integration
+  - **Smart Pagination**: Fetches up to 1000+ results across multiple pages
+  - **Time Filtering**: 7-day window for news, 90-day for general queries
+  - **Deduplication**: Automatic duplicate detection across pages
+  - **Auto-Detection**: Triggers Bing News for queries containing: "news", "recent", "latest", "today"
 - **Debug Mode**: Colored curl-equivalent request/response output (`--llm-debug` flag)
   - Cyan requests, green responses, yellow info
   - Pretty-printed JSON with sensitive data redacted
@@ -191,7 +204,7 @@ features:
 | `/bedrock/*` | Mixed | AWS Bedrock | 28+ models (Claude, Nova, etc.) |
 | `/gpt-oss/*` | OpenAI | Local vLLM | On-prem with failover |
 | `/qwen/*` | OpenAI | Local vLLM | On-prem, `<think>` tag fix |
-| `/cc/*` | **Anthropic** | Fireworks/Local | Claude Code production endpoint |
+| `/cc/*` | **Anthropic** | Fireworks/Local | ⭐ Claude Code production endpoint (web search) |
 | `/cc-qwen/*` | **Anthropic** | Local vLLM | Claude Code (local only) |
 | `/multi/*` | OpenAI | On-prem + Cloud | Intelligent failover |
 | `/meta/{userID}/*` | Various | Various | User-specific routing |
@@ -234,12 +247,17 @@ features:
 - `POST /multi/v1/chat/completions` - Intelligent routing with automatic failover
   - Example: Use `"model": "gpt-oss-120b"` to route to on-prem primary with Bedrock fallback
 
-### Claude Code Cloud (`/cc`)
+### Claude Code Cloud (`/cc`) ⭐
 
-Production Anthropic-compatible endpoint for Claude Code with open-source models:
+**Production Anthropic-compatible endpoint for Claude Code with open-source models and integrated web search:**
 
 - `POST /cc/v1/messages` - Anthropic Messages API compatible
+  - **With Web Search**: Automatic `web_search` tool injection
+  - **Streaming Support**: Full SSE streaming with tool results
+  - **Tool Use**: Complete tool call/result handling
+  - **Multiple Backends**: Fireworks, local vLLM, or other OpenAI-compatible services
 - `POST /cc/v1/messages/count_tokens` - Token counting endpoint
+- `POST /cc/v1/api/event_logging/batch` - Telemetry event logging
 
 **Client Configuration** (`~/.claude/settings.json`):
 ```json
@@ -254,9 +272,140 @@ Production Anthropic-compatible endpoint for Claude Code with open-source models
 ```
 
 **Available models** (configurable in `configs/onprem.yml`):
-- `hc/glm-4.7` - GLM-4.7 via Fireworks
-- `hc/deepseek-v3` - DeepSeek V3 via Fireworks
-- `hc/kimi-k2` - Kimi K2 via Fireworks (good for tool use)
+- `hc/glm-4.7` - GLM-4.7 via Fireworks (general purpose)
+- `hc/deepseek-v3` - DeepSeek V3 via Fireworks (strong reasoning)
+- `hc/kimi-k2` - Kimi K2 via Fireworks (best for tool use)
+
+**Features**:
+- Full Anthropic Messages API compatibility
+- Automatic tool use and streaming support
+- **Built-in web search** (see below)
+- Usage tracking and token counting
+- Event logging for analytics
+- Multi-model support with custom routing
+- Token counting and estimation
+
+### Web Search Integration ⭐
+
+**Bringing real-time information access to open-source models - no API keys required!**
+
+The proxy includes built-in web search capabilities for open-source models that lack native search functionality (GLM, DeepSeek, Qwen, etc.).
+
+#### How It Works
+
+The web search feature operates as an agentic loop:
+
+1. **Tool Injection**: When enabled, the proxy automatically injects a `web_search` tool into requests
+2. **Search Execution**: When the LLM uses the `web_search` tool, the proxy intercepts it and executes the search
+3. **Result Integration**: Search results are automatically fed back to the LLM as a tool response
+4. **Continuation**: The conversation continues seamlessly with the LLM processing the search results
+
+#### Search Technology
+
+- **Scraper**: [Colly](https://go-colly.org) - Fast, elegant web scraping framework for Go
+- **Search Engine**: Bing (regular search) and Bing News (for news queries)
+- **No API Keys Required**: Pure web scraping, no third-party API dependencies
+- **Pagination Support**: Fetches multiple pages to retrieve up to 1000+ results
+
+#### Search Modes
+
+The proxy intelligently selects the appropriate search mode:
+
+**Regular Bing Search (Default)**:
+- Used for general queries and fact-finding
+- Returns web results, articles, documentation
+- HTML selector: `li.b_algo`
+- Extracts: title, URL, snippet from standard search results
+- Time filter: 90 days (long-form content)
+
+**Bing News Search (Auto-detected)**:
+- Triggered automatically by keywords: "news", "recent", "latest", "today"
+- Returns news articles, press releases, breaking news
+- HTML selector: `div.news-card`
+- Time filter: 7 days (fresh content)
+- Can also be explicitly requested via `Advanced: true` in search options
+
+| Query | Mode | Time Filter | Results |
+|-------|------|-------------|---------|
+| "golang best practices" | Regular | 90 days | Documentation, blogs, tutorials |
+| "latest AI news" | News (auto) | 7 days | News articles, announcements |
+| "recent database trends" | News (auto) | 7 days | Industry news, analysis |
+| "python error handling" | Regular | 90 days | Documentation, Stack Overflow, blogs |
+
+#### Configuration
+
+Enable in `configs/onprem.yml`:
+
+```yaml
+claude_code_cloud:
+  enabled: true
+  web_search:
+    enabled: true              # Enable web search functionality
+    provider: "colly"          # Uses Colly for paginated Bing scraping
+    tool_name: "web_search"    # Tool name injected into requests
+    max_results: 100           # Max results per search (supports 1000+)
+```
+
+#### Architecture
+
+**Search Flow**:
+```
+Client Request → Proxy → Tool Injection → LLM Response with tool_use
+                   ↓
+            Colly Web Scraper
+                   ↓
+          Bing / Bing News (with pagination)
+                   ↓
+         Search Results Extraction
+                   ↓
+    Tool Result → LLM Processing → Final Response
+```
+
+**Key Components**:
+- `internal/websearch/websearch.go` - Search interface and result types
+- `internal/websearch/colly.go` - Colly-based Bing scraper with pagination
+- `internal/providers/claude_code_cloud.go` - Web search integration logic
+
+**Pagination Logic**:
+- Calculates pages needed based on `max_results`
+- Fetches ~12 results per page (Bing's average)
+- Stops when: target reached, no new results, or 100 pages limit hit
+- Deduplicates results across pages
+
+#### Usage Example
+
+When web search is enabled, your Claude Code client can leverage real-time information:
+
+```
+User: "What are the latest developments in quantum computing?"
+     ↓
+Proxy injects web_search tool
+     ↓
+GLM-4.7 recognizes current events needed
+     ↓
+LLM triggers: {"type": "tool_use", "name": "web_search", "input": {"query": "...quantum computing 2026..."}}
+     ↓
+Proxy: Scrapes Bing News (auto-detected "latest")
+Returns: 5-10 recent articles about quantum computing
+     ↓
+LLM: Synthesizes results with reasoning
+     ↓
+Response: "Recent developments include: [current, sourced information]"
+```
+
+#### Performance
+
+- **Single search**: ~2-3 seconds (one page)
+- **Multi-page (100 results)**: ~8-12 seconds (paginated)
+- **Network dependent**: Latency varies with Bing responsiveness
+- **No throttling**: Bing doesn't enforce strict rate limits for scraping
+
+#### Limitations & Considerations
+
+- **Dynamic Content**: Bing may change HTML selectors (we update as needed)
+- **CAPTCHA**: Rare, but possible if excessive scraping detected
+- **Terms of Service**: Web scraping may violate Bing's ToS (use responsibly)
+- **Data Privacy**: Search queries sent to Bing's servers (consider privacy implications)
 
 ## Architecture
 
@@ -338,6 +487,117 @@ To add a new provider:
 ## Dependencies
 
 - [Gorilla Mux](https://github.com/gorilla/mux) - HTTP router and URL matcher
+- [Colly](https://github.com/gocolly/colly) - Web scraping framework for Go
+- [AWS SDK for Go v2](https://github.com/aws/aws-sdk-go-v2) - For Bedrock integration
+- [DataDog Go](https://github.com/DataDog/datadog-go) - Metrics and monitoring
+
+## Deployment
+
+### On-Premises Deployment
+
+For on-premises deployments, all commands must be executed with the `appmotel` user to ensure proper permissions and security:
+
+```bash
+# Build the binary
+make build
+
+# Deploy/run as appmotel user
+sudo -u appmotel ./bin/llm-proxy
+
+# With systemd
+sudo systemctl restart llm-proxy
+sudo systemctl status llm-proxy
+
+# View logs
+sudo journalctl -u llm-proxy -f
+```
+
+### Production Deployment (AWS ECS)
+
+The repository includes automated deployment scripts:
+
+```bash
+# Deploy to production
+./scripts/deploy.sh production <git_sha>
+```
+
+This script:
+1. Pulls the Docker image from ECR
+2. Updates Terraform configuration
+3. Deploys to ECS with specified CPU/memory resources
+4. Validates deployment success
+
+### Environment Variables
+
+Required for production:
+```bash
+# Cloud Provider API Keys
+export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+export GEMINI_API_KEY=...
+export FIREWORKS_API_KEY=fw-...
+
+# AWS Configuration (for Bedrock)
+export AWS_PROFILE=bedrock
+export AWS_REGION=us-west-2
+
+# Local LLM Endpoints (optional)
+export GPT_OSS_ENDPOINT_1=http://192.168.1.100:8000/v1
+export QWEN_ENDPOINT_1=http://192.168.1.200:8001/v1
+
+# Server Configuration
+export PORT=9002
+export ENVIRONMENT=production
+export LOG_LEVEL=info
+export LOG_FORMAT=json
+```
+
+### Configuration Files
+
+- `configs/base.yml` - Base configuration with model definitions
+- `configs/dev.yml` - Development overrides
+- `configs/onprem.yml` - On-premises deployment config
+- `configs/production.yml` - Production overrides
+
+Configuration supports environment variable expansion:
+```yaml
+local_llms:
+  qwen:
+    endpoints:
+      - url: "${QWEN_ENDPOINT_1:-http://localhost:8001/v1}"
+```
+
+### Health Checks
+
+Monitor service health:
+```bash
+# Basic health check
+curl http://localhost:9002/health
+
+# Response format
+{
+  "status": "healthy",
+  "providers": {
+    "openai": {"status": "configured"},
+    "anthropic": {"status": "configured"},
+    "cc": {"status": "ready", "web_search": "enabled"}
+  }
+}
+```
+
+### Debug Mode
+
+For troubleshooting, enable debug mode to see curl-equivalent request/response output:
+
+```bash
+./bin/llm-proxy --llm-debug
+```
+
+This provides:
+- Color-coded request/response logs (cyan/green/yellow)
+- Pretty-printed JSON bodies
+- Timing information
+- Sensitive data automatically redacted
 
 ## Build Information
 

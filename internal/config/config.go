@@ -259,7 +259,7 @@ type ClaudeCodeCloudConfig struct {
 // WebSearchConfig represents configuration for proxy-side web search
 type WebSearchConfig struct {
 	Enabled        bool     `yaml:"enabled"`                    // Enable web search interception
-	Provider       string   `yaml:"provider"`                   // Search provider: "tavily" (default)
+	Provider       string   `yaml:"provider"`                   // Search provider: always uses "colly" (paginated Bing search)
 	ToolName       string   `yaml:"tool_name,omitempty"`        // Tool name to intercept (default: "web_search")
 	MaxResults     int      `yaml:"max_results,omitempty"`      // Max results per search (default: 5)
 	IncludeDomains []string `yaml:"include_domains,omitempty"`  // Only search these domains

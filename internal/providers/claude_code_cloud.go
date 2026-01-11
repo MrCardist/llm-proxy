@@ -39,19 +39,9 @@ func NewClaudeCodeCloud(cfg *config.ClaudeCodeCloudConfig) *ClaudeCodeCloud {
 	// Initialize web search client if configured
 	var webSearch websearch.Client
 	if cfg.WebSearch != nil && cfg.WebSearch.Enabled {
-		// Select web search provider based on config
-		switch cfg.WebSearch.Provider {
-		case "bing":
-			webSearch = websearch.NewBingClient()
-			log.Printf("Claude Code Cloud: Web search enabled using Bing")
-		case "colly":
-			webSearch = websearch.NewCollyClient()
-			log.Printf("Claude Code Cloud: Web search enabled using Colly (Google News)")
-		default:
-			// Default to Bing for best results
-			webSearch = websearch.NewBingClient()
-			log.Printf("Claude Code Cloud: Web search enabled using Bing (default)")
-		}
+		// Use Colly for web search (Bing / Bing News)
+		webSearch = websearch.NewCollyClient()
+		log.Printf("Claude Code Cloud: Web search enabled using Colly (Bing)")
 	}
 
 	return &ClaudeCodeCloud{
