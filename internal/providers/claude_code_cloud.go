@@ -1434,12 +1434,19 @@ func (p *ClaudeCodeCloud) handleForcedStreamingRequest(w http.ResponseWriter, ba
 // - Text content (content field)
 // - Thinking/reasoning content (reasoning_content field from Fireworks GLM)
 // - Tool calls (tool_calls field)
+// - Web search agentic loop (when web_search tool is called, executes and continues)
 func (p *ClaudeCodeCloud) handleStreamingRequest(w http.ResponseWriter, backendURL, apiKey string, requestBody []byte, requestedModel string) {
 	// Set up SSE headers for Anthropic format
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Check if web search is enabled - if so, use the agentic streaming handler
+	if p.isWebSearchEnabled() {
+		p.handleStreamingRequestWithWebSearch(w, backendURL, apiKey, requestBody, requestedModel, 5)
+		return
+	}
 
 	// Create HTTP request to backend
 	req, err := http.NewRequest("POST", backendURL, bytes.NewBuffer(requestBody))
@@ -1907,6 +1914,433 @@ func (p *ClaudeCodeCloud) writeAnthropicStreamError(w http.ResponseWriter, messa
 			"type":    "service_unavailable",
 			"message": message,
 		},
+	})
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// handleStreamingRequestWithWebSearch handles streaming requests with web search support.
+// It collects the initial streaming response, and if a web_search tool is called,
+// executes the search and continues the conversation, streaming all results to the client.
+func (p *ClaudeCodeCloud) handleStreamingRequestWithWebSearch(w http.ResponseWriter, backendURL, apiKey string, requestBody []byte, requestedModel string, maxIterations int) {
+	msgID := "msg_" + generateID()
+
+	// Send initial message_start event
+	p.writeAnthropicStreamEvent(w, "message_start", map[string]interface{}{
+		"type": "message_start",
+		"message": map[string]interface{}{
+			"id":      msgID,
+			"type":    "message",
+			"role":    "assistant",
+			"content": []interface{}{},
+			"model":   requestedModel,
+			"usage": map[string]interface{}{
+				"input_tokens":  0,
+				"output_tokens": 0,
+			},
+		},
+	})
+
+	flushContent := func() {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+	flushContent()
+
+	// Track global block index across all iterations
+	globalBlockIndex := 0
+
+	// Parse original request for the agentic loop
+	var openaiReq map[string]interface{}
+	if err := json.Unmarshal(requestBody, &openaiReq); err != nil {
+		p.writeAnthropicStreamError(w, "Failed to parse request")
+		return
+	}
+
+	// Agentic loop - handle multiple tool calls
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		log.Printf("Claude Code Cloud: Web search streaming iteration %d", iteration)
+
+		// Make request to backend
+		req, err := http.NewRequest("POST", backendURL, bytes.NewBuffer(requestBody))
+		if err != nil {
+			p.writeAnthropicStreamError(w, "Failed to create backend request")
+			return
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Accept", "text/event-stream")
+
+		resp, err := p.client.Do(req)
+		if err != nil {
+			p.writeAnthropicStreamError(w, fmt.Sprintf("Backend request failed: %v", err))
+			return
+		}
+
+		// Process streaming response and collect tool calls
+		var contentBuffer strings.Builder
+		var thinkingBuffer strings.Builder
+		inThinkingBlock := false
+		thinkingBlockStarted := false
+		textBlockStarted := false
+		finishReason := "end_turn"
+		localBlockIndex := globalBlockIndex
+
+		type toolCallState struct {
+			id        string
+			name      string
+			arguments strings.Builder
+			started   bool
+			index     int
+		}
+		toolCalls := make(map[int]*toolCallState)
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				break
+			}
+
+			var openaiChunk map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &openaiChunk); err != nil {
+				continue
+			}
+
+			choices, ok := openaiChunk["choices"].([]interface{})
+			if !ok || len(choices) == 0 {
+				continue
+			}
+
+			choice, ok := choices[0].(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			// Check finish_reason
+			if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+				switch fr {
+				case "stop":
+					finishReason = "end_turn"
+				case "length":
+					finishReason = "max_tokens"
+				case "tool_calls":
+					finishReason = "tool_use"
+				default:
+					finishReason = "end_turn"
+				}
+			}
+
+			delta, ok := choice["delta"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			// Handle reasoning_content (Fireworks GLM thinking)
+			if reasoningContent, ok := delta["reasoning_content"].(string); ok && reasoningContent != "" {
+				if !thinkingBlockStarted {
+					thinkingBlockStarted = true
+					inThinkingBlock = true
+					p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+						"type":  "content_block_start",
+						"index": localBlockIndex,
+						"content_block": map[string]interface{}{
+							"type":     "thinking",
+							"thinking": "",
+						},
+					})
+				}
+				if inThinkingBlock {
+					thinkingBuffer.WriteString(reasoningContent)
+					p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+						"type":  "content_block_delta",
+						"index": localBlockIndex,
+						"delta": map[string]interface{}{
+							"type":     "thinking_delta",
+							"thinking": reasoningContent,
+						},
+					})
+				}
+				flushContent()
+				continue
+			}
+
+			// Handle text content
+			if content, ok := delta["content"].(string); ok && content != "" {
+				// Close thinking block if open
+				if thinkingBlockStarted && inThinkingBlock {
+					p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+						"type":  "content_block_stop",
+						"index": localBlockIndex,
+					})
+					inThinkingBlock = false
+					localBlockIndex++
+				}
+
+				contentBuffer.WriteString(content)
+
+				if !textBlockStarted {
+					textBlockStarted = true
+					p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+						"type":  "content_block_start",
+						"index": localBlockIndex,
+						"content_block": map[string]interface{}{
+							"type": "text",
+							"text": "",
+						},
+					})
+				}
+				p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+					"type":  "content_block_delta",
+					"index": localBlockIndex,
+					"delta": map[string]interface{}{
+						"type": "text_delta",
+						"text": content,
+					},
+				})
+				flushContent()
+				continue
+			}
+
+			// Handle tool_calls
+			if tcDelta, ok := delta["tool_calls"].([]interface{}); ok {
+				for _, tc := range tcDelta {
+					toolCall, ok := tc.(map[string]interface{})
+					if !ok {
+						continue
+					}
+
+					tcIndex := 0
+					if idx, ok := toolCall["index"].(float64); ok {
+						tcIndex = int(idx)
+					}
+
+					tcState, exists := toolCalls[tcIndex]
+					if !exists {
+						tcState = &toolCallState{}
+						toolCalls[tcIndex] = tcState
+					}
+
+					if id, ok := toolCall["id"].(string); ok && id != "" {
+						tcState.id = id
+					}
+
+					if function, ok := toolCall["function"].(map[string]interface{}); ok {
+						if name, ok := function["name"].(string); ok && name != "" {
+							tcState.name = name
+						}
+						if arguments, ok := function["arguments"].(string); ok {
+							tcState.arguments.WriteString(arguments)
+						}
+					}
+
+					// Start tool_use block if not started
+					if !tcState.started && tcState.name != "" {
+						// Close any open text/thinking block
+						if textBlockStarted {
+							p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+								"type":  "content_block_stop",
+								"index": localBlockIndex,
+							})
+							textBlockStarted = false
+							localBlockIndex++
+						} else if thinkingBlockStarted && inThinkingBlock {
+							p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+								"type":  "content_block_stop",
+								"index": localBlockIndex,
+							})
+							inThinkingBlock = false
+							localBlockIndex++
+						}
+
+						tcState.started = true
+						tcState.index = localBlockIndex
+
+						toolUseID := tcState.id
+						if toolUseID == "" || strings.HasPrefix(toolUseID, "functions.") || strings.HasPrefix(toolUseID, "chatcmpl-tool-") {
+							toolUseID = "toolu_" + generateID()
+						}
+
+						p.writeAnthropicStreamEvent(w, "content_block_start", map[string]interface{}{
+							"type":  "content_block_start",
+							"index": localBlockIndex,
+							"content_block": map[string]interface{}{
+								"type":  "tool_use",
+								"id":    toolUseID,
+								"name":  tcState.name,
+								"input": map[string]interface{}{},
+							},
+						})
+						localBlockIndex++
+					}
+
+					// Send input_json_delta
+					if tcState.started {
+						if function, ok := toolCall["function"].(map[string]interface{}); ok {
+							if arguments, ok := function["arguments"].(string); ok && arguments != "" {
+								p.writeAnthropicStreamEvent(w, "content_block_delta", map[string]interface{}{
+									"type":  "content_block_delta",
+									"index": tcState.index,
+									"delta": map[string]interface{}{
+										"type":         "input_json_delta",
+										"partial_json": arguments,
+									},
+								})
+							}
+						}
+					}
+				}
+				flushContent()
+			}
+		}
+		resp.Body.Close()
+
+		// Close any open blocks
+		if textBlockStarted {
+			p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": localBlockIndex,
+			})
+			localBlockIndex++
+		} else if thinkingBlockStarted && inThinkingBlock {
+			p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": localBlockIndex,
+			})
+			localBlockIndex++
+		}
+
+		for _, tc := range toolCalls {
+			if tc.started {
+				p.writeAnthropicStreamEvent(w, "content_block_stop", map[string]interface{}{
+					"type":  "content_block_stop",
+					"index": tc.index,
+				})
+			}
+		}
+		flushContent()
+
+		// Check if we have a web_search tool call
+		var webSearchToolCall *toolCallState
+		for _, tc := range toolCalls {
+			if tc.name == "web_search" {
+				webSearchToolCall = tc
+				break
+			}
+		}
+
+		// If no web_search or finish_reason is not tool_use, we're done
+		if webSearchToolCall == nil || finishReason != "tool_use" {
+			// Send final events
+			p.writeAnthropicStreamEvent(w, "message_delta", map[string]interface{}{
+				"type": "message_delta",
+				"delta": map[string]interface{}{
+					"stop_reason":   finishReason,
+					"stop_sequence": nil,
+				},
+				"usage": map[string]interface{}{
+					"output_tokens": 0,
+				},
+			})
+			p.writeAnthropicStreamEvent(w, "message_stop", map[string]interface{}{
+				"type": "message_stop",
+			})
+			flushContent()
+
+			log.Printf("Claude Code Cloud: Web search streaming completed - stop_reason=%s, iterations=%d", finishReason, iteration+1)
+			return
+		}
+
+		// Execute web search
+		var searchQuery string
+		var argsMap map[string]interface{}
+		if err := json.Unmarshal([]byte(webSearchToolCall.arguments.String()), &argsMap); err == nil {
+			if q, ok := argsMap["query"].(string); ok {
+				searchQuery = q
+			}
+		}
+
+		log.Printf("Claude Code Cloud: Executing web search for query: %s", searchQuery)
+		searchResult, err := p.executeWebSearch(searchQuery)
+		if err != nil {
+			log.Printf("Claude Code Cloud: web search error: %v", err)
+			searchResult = fmt.Sprintf("Web search failed: %v", err)
+		}
+
+		// Build tool result for next request
+		toolUseID := webSearchToolCall.id
+		if toolUseID == "" || strings.HasPrefix(toolUseID, "functions.") || strings.HasPrefix(toolUseID, "chatcmpl-tool-") {
+			toolUseID = "toolu_" + generateID()
+		}
+
+		// Update openaiReq with assistant response and tool result
+		messages, _ := openaiReq["messages"].([]interface{})
+
+		// Add assistant message with tool call
+		assistantMsg := map[string]interface{}{
+			"role": "assistant",
+			"tool_calls": []map[string]interface{}{
+				{
+					"id":   toolUseID,
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      "web_search",
+						"arguments": webSearchToolCall.arguments.String(),
+					},
+				},
+			},
+		}
+		if contentBuffer.Len() > 0 {
+			assistantMsg["content"] = contentBuffer.String()
+		}
+		messages = append(messages, assistantMsg)
+
+		// Add tool result message
+		toolResultMsg := map[string]interface{}{
+			"role":         "tool",
+			"tool_call_id": toolUseID,
+			"content":      searchResult,
+		}
+		messages = append(messages, toolResultMsg)
+
+		openaiReq["messages"] = messages
+
+		// Re-marshal request body for next iteration
+		requestBody, err = json.Marshal(openaiReq)
+		if err != nil {
+			p.writeAnthropicStreamError(w, "Failed to prepare continuation request")
+			return
+		}
+
+		// Update global block index for next iteration
+		globalBlockIndex = localBlockIndex
+
+		log.Printf("Claude Code Cloud: Continuing after web search, iteration %d", iteration+1)
+	}
+
+	// Max iterations reached
+	log.Printf("Claude Code Cloud: Web search max iterations reached")
+	p.writeAnthropicStreamEvent(w, "message_delta", map[string]interface{}{
+		"type": "message_delta",
+		"delta": map[string]interface{}{
+			"stop_reason":   "end_turn",
+			"stop_sequence": nil,
+		},
+		"usage": map[string]interface{}{
+			"output_tokens": 0,
+		},
+	})
+	p.writeAnthropicStreamEvent(w, "message_stop", map[string]interface{}{
+		"type": "message_stop",
 	})
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()

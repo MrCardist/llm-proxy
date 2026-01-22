@@ -124,14 +124,34 @@ func (c *CollyClient) Search(query string, opts *SearchOptions) (*SearchResult, 
 
 		// Process Bing News results
 		processNewsResult := func(e *colly.HTMLElement) {
-			// Extract title from a.title element
-			title := e.ChildText("a.title")
+			// Bing News structure (as of Jan 2026):
+			// <div class="news-card newsitem cardcommon"
+			//      data-title="..." data-url="..." data-author="...">
+			// Extract from data attributes on the news-card div
+			title := e.Attr("data-title")
+			link := e.Attr("data-url")
+			author := e.Attr("data-author")
 
-			// Extract link from a.title href attribute
-			link := e.ChildAttr("a.title", "href")
+			// Fallback: try the title attribute
+			if title == "" {
+				title = e.Attr("title")
+			}
+
+			// Fallback: try finding a.title child element (old structure)
+			if title == "" {
+				title = e.ChildText("a.title")
+			}
+			if link == "" {
+				link = e.ChildAttr("a.title", "href")
+			}
 
 			// Extract snippet from the snippet div (if available)
 			snippet := e.ChildText("div.snippet")
+
+			// If no snippet, use author as context
+			if snippet == "" && author != "" {
+				snippet = "Source: " + author
+			}
 
 			// Only add if we have at least title and link
 			if title != "" && link != "" {
@@ -158,8 +178,9 @@ func (c *CollyClient) Search(query string, opts *SearchOptions) (*SearchResult, 
 
 		// Register callbacks based on search type
 		if opts.Advanced {
-			// Bing News results: news-card > news-card-body > (a.title, div.snippet)
-			collector.OnHTML("div.news-card", processNewsResult)
+			// Bing News results: div with class containing "news-card" and "newsitem"
+			// Full class is typically: "news-card newsitem cardcommon"
+			collector.OnHTML("div.news-card.newsitem", processNewsResult)
 		} else {
 			// Regular Bing search results: li.b_algo
 			collector.OnHTML("li.b_algo", processRegularResult)
