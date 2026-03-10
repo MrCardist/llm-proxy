@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AWS Bedrock Cost Matrix - Model vs User</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        h1 {
+            color: #232f3e;
+            border-bottom: 4px solid #ff9900;
+            padding-bottom: 15px;
+            margin-bottom: 30px;
+            font-size: 28px;
+        }
+        .header-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .date-range {
+            color: #666;
+            font-size: 14px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .controls select {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .controls button {
+            padding: 8px 16px;
+            background-color: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.2s;
+        }
+        .controls button:hover {
+            background-color: #764ba2;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px;
+            color: #666;
+            font-size: 18px;
+        }
+        .error {
+            background-color: #fee;
+            border-left: 4px solid #c00;
+            padding: 20px;
+            border-radius: 8px;
+            color: #c00;
+            margin: 20px 0;
+        }
+
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .summary-card {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        .summary-card label {
+            font-size: 12px;
+            color: #999;
+            text-transform: uppercase;
+        }
+        .summary-card .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #232f3e;
+            margin-top: 5px;
+        }
+
+        .chart-container-wrapper {
+            background-color: #f8f9fa;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .chart-container-wrapper h2 {
+            color: #232f3e;
+            margin-bottom: 20px;
+            font-size: 20px;
+            border-left: 4px solid #ff9900;
+            padding-left: 15px;
+        }
+
+        .chart-canvas {
+            height: 400px;
+            position: relative;
+        }
+
+        .matrix-container {
+            overflow-x: auto;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #f8f9fa;
+            padding: 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            padding: 12px 8px;
+            text-align: right;
+            border: 1px solid #eee;
+        }
+        th {
+            background-color: #667eea;
+            color: white;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        td:first-child, th:first-child {
+            text-align: left;
+            font-weight: 500;
+            background-color: #f9f9f9;
+            min-width: 250px;
+            position: sticky;
+            left: 0;
+            z-index: 1;
+        }
+        th:first-child {
+            background-color: #667eea;
+            color: white;
+            z-index: 2;
+        }
+        tbody tr:hover {
+            background-color: #e8edf7;
+        }
+
+        .cell-value {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* Color intensity based on cost */
+        .cost-high {
+            background-color: #fee !important;
+            color: #c00;
+            font-weight: 600;
+        }
+        .cost-medium {
+            background-color: #ffd !important;
+            color: #f80;
+        }
+        .cost-low {
+            background-color: #efe !important;
+            color: #080;
+        }
+        .cost-zero {
+            background-color: #fff !important;
+            color: #ccc;
+        }
+
+        .total-row {
+            background-color: #f0f0f0;
+            font-weight: 600;
+        }
+        .total-col {
+            background-color: #f0f0f0;
+            font-weight: 600;
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .nav-links {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #ddd;
+        }
+        .nav-links a {
+            display: inline-block;
+            margin-right: 15px;
+            color: #667eea;
+            text-decoration: none;
+            font-size: 14px;
+            transition: color 0.2s;
+        }
+        .nav-links a:hover {
+            color: #764ba2;
+            text-decoration: underline;
+        }
+
+        .section-title {
+            color: #232f3e;
+            margin-bottom: 20px;
+            font-size: 20px;
+            border-left: 4px solid #ff9900;
+            padding-left: 15px;
+            margin-top: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav-links">
+            <a href="/">← Back to Dashboard</a>
+            <a href="/pricing">View Pricing</a>
+        </div>
+
+        <h1>Cost Matrix: Model vs User (in USD)</h1>
+
+        <div id="content" class="loading">Loading cost matrix data...</div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        async function loadData() {
+            try {
+                const days = parseInt(new URLSearchParams(window.location.search).get('days') || '7');
+                const response = await fetch(`/api/cost-matrix?days=${days}`);
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('content').innerHTML = `<div class="error">${data.error}</div>`;
+                    return;
+                }
+
+                renderMatrix(data);
+            } catch (error) {
+                document.getElementById('content').innerHTML = `<div class="error">Error loading data: ${error.message}</div>`;
+                console.error('Error:', error);
+            }
+        }
+
+        function getColorClass(cost, maxCost) {
+            if (cost === 0) return 'cost-zero';
+            const threshold = maxCost * 0.5;
+            const threshold2 = maxCost * 0.25;
+            if (cost >= threshold) return 'cost-high';
+            if (cost >= threshold2) return 'cost-medium';
+            return 'cost-low';
+        }
+
+        function formatCurrency(value) {
+            if (value === 0) return '-';
+            if (value < 0.01) return value.toFixed(6);
+            if (value < 1) return value.toFixed(4);
+            return value.toFixed(2);
+        }
+
+        function renderMatrix(data) {
+            const { users, models, model_display_names, data: matrix, user_totals, model_totals, date_range, total_cost } = data;
+
+            if (users.length === 0 || models.length === 0) {
+                document.getElementById('content').innerHTML = '<div class="no-data">No usage data available for the selected period.</div>';
+                return;
+            }
+
+            // Transpose the matrix: rows are now models, columns are users
+            const transposedMatrix = [];
+            for (let modelIdx = 0; modelIdx < models.length; modelIdx++) {
+                const row = [];
+                for (let userIdx = 0; userIdx < users.length; userIdx++) {
+                    row.push(matrix[userIdx][modelIdx]);
+                }
+                transposedMatrix.push(row);
+            }
+
+            // Find max cost for color scaling
+            let maxCost = 0;
+            for (const row of transposedMatrix) {
+                for (const cost of row) {
+                    maxCost = Math.max(maxCost, cost);
+                }
+            }
+
+            // Build HTML with visual chart first
+            let html = `
+                <div class="header-controls">
+                    <div>
+                        <div class="date-range">Period: ${data.date_range}</div>
+                    </div>
+                    <div class="controls">
+                        <select id="daysSelect" onchange="changeDays()">
+                            <option value="7" ${new URLSearchParams(window.location.search).get('days') === '7' || !new URLSearchParams(window.location.search).get('days') ? 'selected' : ''}>Last 7 days</option>
+                            <option value="30" ${new URLSearchParams(window.location.search).get('days') === '30' ? 'selected' : ''}>Last 30 days</option>
+                            <option value="90" ${new URLSearchParams(window.location.search).get('days') === '90' ? 'selected' : ''}>Last 90 days</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="summary">
+                    <div class="summary-card">
+                        <label>Total Cost</label>
+                        <div class="value">$${formatCurrency(total_cost)}</div>
+                    </div>
+                    <div class="summary-card">
+                        <label>Users</label>
+                        <div class="value">${users.length}</div>
+                    </div>
+                    <div class="summary-card">
+                        <label>Models</label>
+                        <div class="value">${models.length}</div>
+                    </div>
+                </div>
+
+                <div class="chart-container-wrapper">
+                    <h2>👥 Cost Distribution by User and Model</h2>
+                    <div class="chart-canvas">
+                        <canvas id="costByUserChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="chart-container-wrapper">
+                    <h2>📊 Cost Distribution by Model and User</h2>
+                    <div class="chart-canvas">
+                        <canvas id="costMatrixChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="section-title">📋 Cost Matrix Table (Models × Users)</div>
+
+                <div class="matrix-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Model / User</th>
+            `;
+
+            // Header row with users (columns)
+            for (const user of users) {
+                html += `<th title="${user}">${user}</th>`;
+            }
+            html += `<th>Model Total</th></tr></thead><tbody>`;
+
+            // Data rows (models)
+            for (let modelIdx = 0; modelIdx < models.length; modelIdx++) {
+                const model = models[modelIdx];
+                const displayName = model_display_names[model] || model;
+                html += `<tr>
+                    <td title="${model}">${displayName}</td>
+                `;
+
+                for (let userIdx = 0; userIdx < users.length; userIdx++) {
+                    const cost = transposedMatrix[modelIdx][userIdx];
+                    const colorClass = getColorClass(cost, maxCost);
+                    const displayValue = formatCurrency(cost);
+                    html += `<td class="${colorClass}" title="${cost}">${displayValue}</td>`;
+                }
+
+                const modelTotal = model_totals[model] || 0;
+                html += `<td class="total-col">$${formatCurrency(modelTotal)}</td></tr>`;
+            }
+
+            // Totals row
+            html += `<tr class="total-row">
+                <td>User Total</td>
+            `;
+            for (let userIdx = 0; userIdx < users.length; userIdx++) {
+                const user = users[userIdx];
+                const userTotal = user_totals[user] || 0;
+                const displayValue = formatCurrency(userTotal);
+                html += `<td class="total-col">$${displayValue}</td>`;
+            }
+            html += `<td class="total-col">$${formatCurrency(total_cost)}</td></tr>`;
+
+            html += `</tbody></table></div>`;
+
+            document.getElementById('content').innerHTML = html;
+
+            // Render the charts after HTML is inserted
+            renderCostByUserChart(models, users, model_display_names, transposedMatrix, user_totals, model_totals, maxCost);
+            renderCostMatrixChart(models, model_display_names, users, transposedMatrix, maxCost);
+        }
+
+        function renderCostByUserChart(models, users, model_display_names, transposedMatrix, user_totals, model_totals, maxCost) {
+            const ctx = document.getElementById('costByUserChart');
+            if (!ctx) return;
+
+            // Prepare data for horizontal stacked bar chart (users on Y-axis, models in legend)
+            const datasets = [];
+            const colors = [
+                '#667eea', '#764ba2', '#f5576c', '#f093fb', '#4facfe', '#00f2fe',
+                '#43e97b', '#38f9d7', '#fa709a', '#fee140', '#30b0fe', '#4facfe',
+                '#ff6b6b', '#ee5a6f', '#c44569', '#f8b500', '#56ab91', '#a8e6cf'
+            ];
+
+            // Create dataset for each model
+            for (let modelIdx = 0; modelIdx < models.length; modelIdx++) {
+                const model = models[modelIdx];
+                const displayName = model_display_names[model] || model;
+                const modelData = [];
+
+                // For each user, get the cost for this model
+                for (let userIdx = 0; userIdx < users.length; userIdx++) {
+                    modelData.push(parseFloat(transposedMatrix[modelIdx][userIdx].toFixed(2)));
+                }
+
+                datasets.push({
+                    label: displayName,
+                    data: modelData,
+                    backgroundColor: colors[modelIdx % colors.length],
+                    borderColor: colors[modelIdx % colors.length],
+                    borderWidth: 1
+                });
+            }
+
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: users,  // Users on Y-axis
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',  // Horizontal bars (users on Y-axis)
+                    scales: {
+                        x: {
+                            stacked: true,
+                            title: {
+                                display: true,
+                                text: 'Cost ($)'
+                            }
+                        },
+                        y: {
+                            stacked: true
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                padding: 15,
+                                font: { size: 11 },
+                                boxWidth: 12
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': $' + context.parsed.x.toFixed(4);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderCostMatrixChart(models, model_display_names, users, transposedMatrix, maxCost) {
+            const ctx = document.getElementById('costMatrixChart');
+            if (!ctx) return;
+
+            // Prepare data for stacked bar chart
+            const datasets = [];
+            const colors = [
+                '#667eea', '#764ba2', '#f5576c', '#f093fb', '#4facfe', '#00f2fe',
+                '#43e97b', '#38f9d7', '#fa709a', '#fee140', '#30b0fe', '#4facfe'
+            ];
+
+            for (let userIdx = 0; userIdx < users.length; userIdx++) {
+                const user = users[userIdx];
+                datasets.push({
+                    label: user,
+                    data: transposedMatrix.map(row => parseFloat(row[userIdx].toFixed(2))),
+                    backgroundColor: colors[userIdx % colors.length],
+                    borderColor: colors[userIdx % colors.length],
+                    borderWidth: 1
+                });
+            }
+
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: models.map(m => model_display_names[m] || m),
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    scales: {
+                        x: {
+                            stacked: true,
+                            title: {
+                                display: true,
+                                text: 'Cost ($)'
+                            }
+                        },
+                        y: {
+                            stacked: true
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: {
+                                padding: 15,
+                                font: { size: 12 }
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': $' + context.parsed.x.toFixed(4);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function changeDays() {
+            const days = document.getElementById('daysSelect').value;
+            window.location.search = `?days=${days}`;
+        }
+
+        // Load data on page load
+        loadData();
+    </script>
+</body>
+</html>
