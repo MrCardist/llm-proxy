@@ -91,6 +91,9 @@ var globalAPIKeyStore providers.APIKeyStore
 // Global rate limiter instance
 var globalRateLimiter ratelimit.RateLimiter
 
+// Server start time for uptime tracking
+var startTime time.Time
+
 func init() {
 	logLevel := os.Getenv("LOG_LEVEL")
 	var level slog.Level
@@ -636,6 +639,12 @@ func runServer(yamlConfig *config.YAMLConfig) {
 	// Health check endpoint
 	r.HandleFunc("/health", healthHandler).Methods("GET", "HEAD")
 
+	// Dashboard routes
+	r.HandleFunc("/dashboard", dashboardPageHandler).Methods("GET")
+	r.HandleFunc("/dashboard/api/data", dashboardDataHandler).Methods("GET")
+	r.HandleFunc("/dashboard/api/health", dashboardHealthHandler).Methods("GET")
+	r.HandleFunc("/dashboard/api/recent", dashboardRecentHandler).Methods("GET")
+
 	// Register extra routes FIRST (more specific routes before catch-all PathPrefix)
 	for name, provider := range globalProviderManager.GetAllProviders() {
 		provider.RegisterExtraRoutes(r)
@@ -702,6 +711,9 @@ func runServer(yamlConfig *config.YAMLConfig) {
 		Addr:    "0.0.0.0:" + port,
 		Handler: r,
 	}
+
+	// Record start time for dashboard uptime
+	startTime = time.Now()
 
 	// Set up graceful shutdown
 	go func() {

@@ -141,6 +141,16 @@ func (ct *CostTracker) AddTransport(transport Transport) {
 	ct.transports = append(ct.transports, transport)
 }
 
+// GetCostFilePath returns the file path of the first FileTransport, or empty string if none
+func (ct *CostTracker) GetCostFilePath() string {
+	for _, t := range ct.transports {
+		if ft, ok := t.(*FileTransport); ok {
+			return ft.GetFilePath()
+		}
+	}
+	return ""
+}
+
 // SetLogger sets the logger for the cost tracker
 func (ct *CostTracker) SetLogger(logger *slog.Logger) {
 	ct.logger = logger

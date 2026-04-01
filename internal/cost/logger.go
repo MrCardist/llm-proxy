@@ -57,6 +57,11 @@ func NewFileTransportFromConfig(transportConfig interface{}, logger *slog.Logger
 	return ft.FromConfig(transportConfig, logger)
 }
 
+// GetFilePath returns the output file path for this transport
+func (ft *FileTransport) GetFilePath() string {
+	return ft.outputFile
+}
+
 // WriteRecord writes a cost record to the file
 func (ft *FileTransport) WriteRecord(record *CostRecord) error {
 	ft.fileMutex.Lock()
