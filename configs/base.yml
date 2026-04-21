@@ -21,6 +21,10 @@ features:
     flush_interval: 15 # Interval in seconds to flush pending records (default: 15)
   rate_limiting:
     enabled: false
+  api_key_management:
+    enabled: true
+    table_name: llm-proxy-api-keys--isaac
+    region: us-west-2
 
 # =============================================================================
 # PROVIDER CONFIGURATIONS
