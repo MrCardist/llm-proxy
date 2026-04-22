@@ -1150,7 +1150,7 @@ multi_provider:
 # which get routed to the configured backend (Fireworks, local vLLM, etc.)
 
 claude_code_cloud:
-  enabled: false  # Disabled by default - enable in onprem.yml
+  enabled: true
   models:
     # GLM-4.7 via Fireworks
     "hc/glm-4.7":
