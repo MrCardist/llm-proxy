@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LLM Proxy Admin</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg-container: #1a2236;
+            --bg-section:   #1e2a3a;
+            --bg-card:      #243044;
+            --bg-table-hd:  #0f172a;
+            --bg-hover:     #1e3048;
+            --bg-input:     #0f172a;
+            --text-primary: #e2e8f0;
+            --text-sec:     #94a3b8;
+            --text-muted:   #64748b;
+            --border:       #2d3f55;
+            --border-table: #1e2d40;
+            --accent:       #00b4d8;
+            --danger:       #e74c3c;
+            --success:      #2ecc71;
+            --warning:      #f39c12;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background-color: var(--bg-container);
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        }
+
+        h1 {
+            color: var(--text-primary);
+            border-bottom: 4px solid var(--accent);
+            padding-bottom: 15px;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .header-meta {
+            color: var(--text-sec);
+            font-size: 13px;
+            margin-bottom: 25px;
+        }
+
+        .section {
+            margin: 25px 0;
+            background: var(--bg-section);
+            padding: 22px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+
+        .section h2 {
+            color: var(--text-primary);
+            margin-bottom: 18px;
+            font-size: 18px;
+            border-left: 4px solid var(--accent);
+            padding-left: 14px;
+        }
+
+        /* Form */
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        .form-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+        @media (max-width: 800px) {
+            .form-grid, .form-grid.three { grid-template-columns: 1fr; }
+        }
+
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        .form-group.full { grid-column: 1 / -1; }
+
+        label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-sec);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        label .req { color: var(--danger); margin-left: 2px; }
+
+        input, select, textarea {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 9px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        input::placeholder, textarea::placeholder { color: var(--text-muted); }
+        select option { background: var(--bg-input); }
+        textarea { resize: vertical; min-height: 70px; }
+
+        .hint { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+        /* Buttons */
+        .btn {
+            padding: 9px 20px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: var(--accent); color: #0f172a; }
+        .btn-primary:hover { background: #0098b8; }
+        .btn-success { background: var(--success); color: #0f172a; }
+        .btn-success:hover { background: #25a85f; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover { background: #c0392b; }
+        .btn-ghost {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-sec);
+        }
+        .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-sm { padding: 4px 10px; font-size: 11px; }
+
+        .form-actions { margin-top: 20px; display: flex; gap: 10px; align-items: center; }
+
+        /* Alert */
+        .alert {
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-top: 14px;
+            display: none;
+        }
+        .alert.success { background: #14532d; color: #86efac; border-left: 4px solid var(--success); }
+        .alert.error { background: #7f1d1d; color: #fca5a5; border-left: 4px solid var(--danger); }
+        .alert.show { display: block; }
+
+        /* Table */
+        .table-container { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th {
+            background: var(--bg-table-hd);
+            color: var(--text-primary);
+            padding: 10px 12px;
+            text-align: left;
+            font-weight: 600;
+        }
+        td { padding: 9px 12px; border-bottom: 1px solid var(--border-table); color: var(--text-primary); }
+        tr:hover td { background: var(--bg-hover); }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge.enabled { background: #14532d; color: #86efac; }
+        .badge.disabled { background: #7f1d1d; color: #fca5a5; }
+
+        .provider-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #1e3a5f;
+            color: #93c5fd;
+        }
+
+        .key-id {
+            font-family: monospace;
+            font-size: 12px;
+            color: var(--text-sec);
+        }
+
+        .actions { display: flex; gap: 6px; }
+
+        .loading { text-align: center; padding: 30px; color: var(--text-muted); }
+        .no-data { text-align: center; padding: 30px; color: var(--text-muted); font-style: italic; }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.show { display: flex; }
+        .modal {
+            background: var(--bg-container);
+            border-radius: 12px;
+            padding: 28px;
+            width: 100%;
+            max-width: 500px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+        }
+        .modal h3 {
+            color: var(--text-primary);
+            font-size: 18px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 12px;
+        }
+        .modal-actions { margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end; }
+
+        /* Toggle */
+        .toggle-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+        .toggle {
+            width: 40px; height: 22px;
+            background: var(--border);
+            border-radius: 11px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.2s;
+            border: none;
+            flex-shrink: 0;
+        }
+        .toggle.on { background: var(--success); }
+        .toggle::after {
+            content: '';
+            position: absolute;
+            width: 16px; height: 16px;
+            background: white;
+            border-radius: 50%;
+            top: 3px; left: 3px;
+            transition: left 0.2s;
+        }
+        .toggle.on::after { left: 21px; }
+        .toggle-label { font-size: 13px; color: var(--text-sec); }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>LLM Proxy Admin</h1>
+    <div class="header-meta">API Key Management &mdash; <span id="table-name">loading...</span></div>
+
+    <!-- Create Key -->
+    <div class="section">
+        <h2>Create New Key</h2>
+        <form id="create-form" onsubmit="createKey(event)">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Provider <span class="req">*</span></label>
+                    <select id="f-provider" required>
+                        <option value="">Select provider...</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic</option>
+                        <option value="gemini">Gemini</option>
+                        <option value="fireworks">Fireworks</option>
+                        <option value="bedrock">Bedrock</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Daily Cost Limit (cents) <span class="req">*</span></label>
+                    <input type="number" id="f-cost-limit" value="10000" min="1" required>
+                    <span class="hint">10000 = $100.00/day</span>
+                </div>
+                <div class="form-group full">
+                    <label>Actual API Key <span class="req">*</span></label>
+                    <input type="password" id="f-actual-key" placeholder="sk-... or fw_..." required>
+                </div>
+                <div class="form-group full">
+                    <label>Description</label>
+                    <input type="text" id="f-description" placeholder="e.g. Test key for Fireworks">
+                </div>
+                <div class="form-group">
+                    <label>Expiration Date (optional)</label>
+                    <input type="date" id="f-expires">
+                </div>
+                <div class="form-group">
+                    <label>Tags (optional)</label>
+                    <textarea id="f-tags" placeholder="env=test&#10;team=infra"></textarea>
+                    <span class="hint">One key=value pair per line</span>
+                </div>
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Create Key</button>
+                <button type="button" class="btn btn-ghost" onclick="resetForm()">Reset</button>
+            </div>
+            <div id="create-alert" class="alert"></div>
+        </form>
+    </div>
+
+    <!-- Keys Table -->
+    <div class="section">
+        <h2>All Keys &nbsp;<button class="btn btn-ghost btn-sm" onclick="loadKeys()">Refresh</button></h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Key ID</th>
+                        <th>Provider</th>
+                        <th>Description</th>
+                        <th>Daily Limit</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Expires</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="keys-tbody">
+                    <tr><td colspan="8" class="loading">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="edit-modal">
+    <div class="modal">
+        <h3>Edit Key</h3>
+        <input type="hidden" id="edit-key-id">
+        <div class="form-group" style="margin-bottom:14px">
+            <label>Description</label>
+            <input type="text" id="edit-description">
+        </div>
+        <div class="form-group" style="margin-bottom:14px">
+            <label>Daily Cost Limit (cents)</label>
+            <input type="number" id="edit-cost-limit" min="1">
+            <span class="hint">100 cents = $1.00</span>
+        </div>
+        <div class="form-group" style="margin-bottom:14px">
+            <label>Status</label>
+            <div class="toggle-row">
+                <button type="button" class="toggle" id="edit-enabled-toggle" onclick="toggleEnabled()"></button>
+                <span class="toggle-label" id="edit-enabled-label">Enabled</span>
+            </div>
+        </div>
+        <div id="edit-alert" class="alert"></div>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveEdit()">Save Changes</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// Pass the token through to all API calls
+const token = new URLSearchParams(window.location.search).get('token') || '';
+const authHeader = () => ({ 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' });
+
+let editEnabled = true;
+
+// ── Table name from health endpoint ─────────────────────────────────────────
+async function loadTableName() {
+    try {
+        const r = await fetch('/dashboard/api/health');
+        const d = await r.json();
+        document.getElementById('table-name').textContent =
+            d.table_name || 'llm-proxy-api-keys';
+    } catch {
+        document.getElementById('table-name').textContent = 'unknown table';
+    }
+}
+
+// ── Load keys ────────────────────────────────────────────────────────────────
+async function loadKeys() {
+    const tbody = document.getElementById('keys-tbody');
+    tbody.innerHTML = '<tr><td colspan="8" class="loading">Loading...</td></tr>';
+    try {
+        const r = await fetch('/admin/api/keys', { headers: authHeader() });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const keys = await r.json();
+        renderKeys(keys);
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="8" class="no-data">Error loading keys: ${e.message}</td></tr>`;
+    }
+}
+
+function renderKeys(keys) {
+    const tbody = document.getElementById('keys-tbody');
+    if (!keys || keys.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="no-data">No keys found. Create one above.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = keys.map(k => `
+        <tr>
+            <td class="key-id">${k.pk}</td>
+            <td><span class="provider-tag">${k.provider}</span></td>
+            <td>${k.description || '—'}</td>
+            <td>$${(k.daily_cost_limit / 100).toFixed(2)}/day</td>
+            <td><span class="badge ${k.enabled ? 'enabled' : 'disabled'}">${k.enabled ? 'Enabled' : 'Disabled'}</span></td>
+            <td style="font-size:12px;white-space:nowrap">${fmtDate(k.created_at)}</td>
+            <td style="font-size:12px">${k.expires_at ? fmtDate(k.expires_at) : '—'}</td>
+            <td>
+                <div class="actions">
+                    <button class="btn btn-ghost btn-sm" onclick="openEdit(${JSON.stringify(k).replace(/"/g, '&quot;')})">Edit</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteKey('${k.pk}')">Delete</button>
+                </div>
+            </td>
+        </tr>`).join('');
+}
+
+function fmtDate(d) {
+    if (!d) return '—';
+    return new Date(d).toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' });
+}
+
+// ── Create key ───────────────────────────────────────────────────────────────
+async function createKey(e) {
+    e.preventDefault();
+    const alert = document.getElementById('create-alert');
+
+    const tagsRaw = document.getElementById('f-tags').value.trim();
+    const tags = {};
+    if (tagsRaw) {
+        tagsRaw.split('\n').forEach(line => {
+            const [k, ...v] = line.split('=');
+            if (k && v.length) tags[k.trim()] = v.join('=').trim();
+        });
+    }
+
+    const body = {
+        provider: document.getElementById('f-provider').value,
+        actual_key: document.getElementById('f-actual-key').value,
+        description: document.getElementById('f-description').value,
+        daily_cost_limit: parseInt(document.getElementById('f-cost-limit').value),
+        tags: Object.keys(tags).length ? tags : undefined,
+    };
+
+    const exp = document.getElementById('f-expires').value;
+    if (exp) body.expires_at = new Date(exp).toISOString();
+
+    try {
+        const r = await fetch('/admin/api/keys', {
+            method: 'POST',
+            headers: authHeader(),
+            body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+
+        alert.className = 'alert success show';
+        alert.innerHTML = `Key created: <strong>${d.pk}</strong> — copy it now, it won't be shown again.`;
+        document.getElementById('create-form').reset();
+        loadKeys();
+    } catch (err) {
+        alert.className = 'alert error show';
+        alert.textContent = `Error: ${err.message}`;
+    }
+}
+
+function resetForm() {
+    document.getElementById('create-form').reset();
+    const alert = document.getElementById('create-alert');
+    alert.className = 'alert';
+}
+
+// ── Edit modal ───────────────────────────────────────────────────────────────
+function openEdit(key) {
+    document.getElementById('edit-key-id').value = key.pk;
+    document.getElementById('edit-description').value = key.description || '';
+    document.getElementById('edit-cost-limit').value = key.daily_cost_limit;
+    editEnabled = key.enabled;
+    updateToggle();
+    document.getElementById('edit-alert').className = 'alert';
+    document.getElementById('edit-modal').classList.add('show');
+}
+
+function closeModal() {
+    document.getElementById('edit-modal').classList.remove('show');
+}
+
+function toggleEnabled() {
+    editEnabled = !editEnabled;
+    updateToggle();
+}
+
+function updateToggle() {
+    const btn = document.getElementById('edit-enabled-toggle');
+    const lbl = document.getElementById('edit-enabled-label');
+    btn.className = 'toggle' + (editEnabled ? ' on' : '');
+    lbl.textContent = editEnabled ? 'Enabled' : 'Disabled';
+}
+
+async function saveEdit() {
+    const keyID = document.getElementById('edit-key-id').value;
+    const alert = document.getElementById('edit-alert');
+    const body = {
+        enabled: editEnabled,
+        description: document.getElementById('edit-description').value,
+        daily_cost_limit: parseInt(document.getElementById('edit-cost-limit').value),
+    };
+    try {
+        const r = await fetch(`/admin/api/keys/${encodeURIComponent(keyID)}`, {
+            method: 'PUT',
+            headers: authHeader(),
+            body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+        closeModal();
+        loadKeys();
+    } catch (err) {
+        alert.className = 'alert error show';
+        alert.textContent = `Error: ${err.message}`;
+    }
+}
+
+// ── Delete key ───────────────────────────────────────────────────────────────
+async function deleteKey(keyID) {
+    if (!confirm(`Delete key ${keyID}?\nThis cannot be undone.`)) return;
+    try {
+        const r = await fetch(`/admin/api/keys/${encodeURIComponent(keyID)}`, {
+            method: 'DELETE',
+            headers: authHeader(),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+        loadKeys();
+    } catch (err) {
+        alert(`Error deleting key: ${err.message}`);
+    }
+}
+
+// ── Close modal on overlay click ─────────────────────────────────────────────
+document.getElementById('edit-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+});
+
+// Initial load
+loadTableName();
+loadKeys();
+</script>
+</body>
+</html>

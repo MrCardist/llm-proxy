@@ -645,6 +645,13 @@ func runServer(yamlConfig *config.YAMLConfig) {
 	r.HandleFunc("/dashboard/api/health", dashboardHealthHandler).Methods("GET")
 	r.HandleFunc("/dashboard/api/recent", dashboardRecentHandler).Methods("GET")
 
+	// Admin routes (token-protected)
+	r.HandleFunc("/admin", adminAuthMiddleware(adminPageHandler)).Methods("GET")
+	r.HandleFunc("/admin/api/keys", adminAuthMiddleware(adminListKeysHandler)).Methods("GET")
+	r.HandleFunc("/admin/api/keys", adminAuthMiddleware(adminCreateKeyHandler)).Methods("POST")
+	r.HandleFunc("/admin/api/keys/{key}", adminAuthMiddleware(adminUpdateKeyHandler)).Methods("PUT")
+	r.HandleFunc("/admin/api/keys/{key}", adminAuthMiddleware(adminDeleteKeyHandler)).Methods("DELETE")
+
 	// Register extra routes FIRST (more specific routes before catch-all PathPrefix)
 	for name, provider := range globalProviderManager.GetAllProviders() {
 		provider.RegisterExtraRoutes(r)
