@@ -639,11 +639,11 @@ func runServer(yamlConfig *config.YAMLConfig) {
 	// Health check endpoint
 	r.HandleFunc("/health", healthHandler).Methods("GET", "HEAD")
 
-	// Dashboard routes
-	r.HandleFunc("/dashboard", dashboardPageHandler).Methods("GET")
-	r.HandleFunc("/dashboard/api/data", dashboardDataHandler).Methods("GET")
-	r.HandleFunc("/dashboard/api/health", dashboardHealthHandler).Methods("GET")
-	r.HandleFunc("/dashboard/api/recent", dashboardRecentHandler).Methods("GET")
+	// Dashboard routes (token-protected)
+	r.HandleFunc("/dashboard", dashboardAuthMiddleware(dashboardPageHandler)).Methods("GET")
+	r.HandleFunc("/dashboard/api/data", dashboardAuthMiddleware(dashboardDataHandler)).Methods("GET")
+	r.HandleFunc("/dashboard/api/health", dashboardAuthMiddleware(dashboardHealthHandler)).Methods("GET")
+	r.HandleFunc("/dashboard/api/recent", dashboardAuthMiddleware(dashboardRecentHandler)).Methods("GET")
 
 	// Admin routes (token-protected)
 	r.HandleFunc("/admin", adminAuthMiddleware(adminPageHandler)).Methods("GET")

@@ -512,6 +512,10 @@
 Chart.defaults.color = '#94a3b8';
 Chart.defaults.borderColor = '#2d3f55';
 
+// Pass token from URL query param to all API requests
+const dashToken = new URLSearchParams(window.location.search).get('token') || '';
+const dashHeaders = () => dashToken ? { 'Authorization': `Bearer ${dashToken}` } : {};
+
 let currentDays = '7';
 let currentData = null;
 const charts = {};
@@ -795,7 +799,7 @@ function renderRecentTable(records) {
 async function loadData() {
     const errorBanner = document.getElementById('error-banner');
     try {
-        const resp = await fetch(`/dashboard/api/data?days=${currentDays}`);
+        const resp = await fetch(`/dashboard/api/data?days=${currentDays}`, { headers: dashHeaders() });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         currentData = data;
@@ -823,7 +827,7 @@ async function loadData() {
 
 async function loadHealth() {
     try {
-        const resp = await fetch('/dashboard/api/health');
+        const resp = await fetch('/dashboard/api/health', { headers: dashHeaders() });
         const data = await resp.json();
         renderHealth(data);
     } catch (e) {

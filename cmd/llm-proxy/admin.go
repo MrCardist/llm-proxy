@@ -24,31 +24,34 @@ func adminStore() *apikeys.Store {
 	return s
 }
 
-// adminAuthMiddleware checks the ADMIN_TOKEN env var against the ?token= query param or
-// the Authorization: Bearer <token> header.
-func adminAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		token := os.Getenv("ADMIN_TOKEN")
-		if token == "" {
-			// No token configured — deny all access
-			http.Error(w, `{"error":"admin panel disabled: ADMIN_TOKEN not set"}`, http.StatusForbidden)
-			return
+// tokenAuthMiddleware returns a middleware that validates the given env var token.
+func tokenAuthMiddleware(envVar, disabledMsg string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			token := os.Getenv(envVar)
+			if token == "" {
+				http.Error(w, `{"error":"`+disabledMsg+`"}`, http.StatusForbidden)
+				return
+			}
+			provided := r.URL.Query().Get("token")
+			if provided == "" {
+				auth := r.Header.Get("Authorization")
+				provided = strings.TrimPrefix(auth, "Bearer ")
+			}
+			if provided != token {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
 		}
-
-		// Check query param first (?token=xxx), then Authorization header
-		provided := r.URL.Query().Get("token")
-		if provided == "" {
-			auth := r.Header.Get("Authorization")
-			provided = strings.TrimPrefix(auth, "Bearer ")
-		}
-
-		if provided != token {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-		next(w, r)
 	}
 }
+
+// adminAuthMiddleware protects admin routes with ADMIN_TOKEN.
+var adminAuthMiddleware = tokenAuthMiddleware("ADMIN_TOKEN", "admin panel disabled: ADMIN_TOKEN not set")
+
+// dashboardAuthMiddleware protects dashboard routes with DASHBOARD_TOKEN.
+var dashboardAuthMiddleware = tokenAuthMiddleware("DASHBOARD_TOKEN", "dashboard disabled: DASHBOARD_TOKEN not set")
 
 // adminPageHandler serves the admin HTML page.
 func adminPageHandler(w http.ResponseWriter, r *http.Request) {
